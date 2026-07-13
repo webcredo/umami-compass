@@ -2,7 +2,7 @@
 
 **Open-source MCP server for Umami Analytics — Cloud and self-hosted.**
 
-![Umami Compass MCP server for Umami Analytics: Cloud and self-hosted](https://raw.githubusercontent.com/webcredo/umami-compass/main/docs/assets/umami-compass-hero-v3.png)
+![Umami Compass MCP server for Umami Analytics: Cloud and self-hosted decision-ready analytics](https://raw.githubusercontent.com/webcredo/umami-compass/main/docs/assets/umami-compass-hero-v4.png)
 
 [![CI](https://github.com/webcredo/umami-compass/actions/workflows/ci.yml/badge.svg)](https://github.com/webcredo/umami-compass/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/umami-compass?logo=npm&color=CB3837)](https://www.npmjs.com/package/umami-compass)
