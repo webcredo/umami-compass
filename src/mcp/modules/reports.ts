@@ -12,6 +12,7 @@ import type {
 } from "../../api/types.js";
 import {
   boundedItems,
+  boundedPageItems,
   boundTopLevelArrays,
   reportDateRange,
   reportFilters,
@@ -149,7 +150,8 @@ export const reportsModule: ToolModule = {
       "list_segments",
       {
         title: "List Umami segments or cohorts",
-        description: "List reusable website segments or cohorts with bounded model context.",
+        description:
+          "List reusable website segments or cohorts from Umami's paged response with explicit context limits.",
         inputSchema: {
           websiteId: uuidSchema,
           type: z.enum(["segment", "cohort"]),
@@ -167,7 +169,7 @@ export const reportsModule: ToolModule = {
             { type, search },
             extra.signal,
           );
-          return { type, ...boundedItems(result, limit) };
+          return { type, ...boundedPageItems(result, limit) };
         }),
     );
 

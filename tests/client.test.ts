@@ -60,6 +60,25 @@ describe("UmamiClient", () => {
     expect(new Headers(init?.headers).get("x-umami-api-key")).toBeNull();
   });
 
+  it("includes team-owned websites in discovery", async () => {
+    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
+      json({
+        data: [{ id: WEBSITE_ID, name: "Team website", teamId: "team-id" }],
+        count: 1,
+        page: 1,
+        pageSize: 20,
+      }),
+    );
+    const client = new UmamiClient(loadConfig({ UMAMI_API_KEY: "cloud-key" }), fetchMock);
+
+    await expect(client.listWebsites({ page: 1, pageSize: 20 })).resolves.toMatchObject({
+      data: [{ id: WEBSITE_ID, name: "Team website" }],
+      count: 1,
+    });
+    const url = requestUrl(fetchMock.mock.calls[0]?.[0] as Parameters<Fetch>[0]);
+    expect(url.searchParams.get("includeTeams")).toBe("true");
+  });
+
   it("deduplicates concurrent login and caches the bearer token", async () => {
     let loginCalls = 0;
     const fetchMock = vi.fn<Fetch>(async (input, init) => {
@@ -215,6 +234,7 @@ describe("UmamiClient", () => {
     expect(url.searchParams.get("page")).toBe("1");
     expect(url.searchParams.get("pageSize")).toBe("100");
     expect(url.searchParams.get("search")).toBe("ary");
+    expect(url.searchParams.get("includeTeams")).toBe("true");
     expect(client.isWebsiteAllowed(WEBSITE_ID.toUpperCase())).toBe(true);
   });
 

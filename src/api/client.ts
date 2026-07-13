@@ -197,13 +197,14 @@ export class UmamiClient {
     query: Query,
     signal?: AbortSignal,
   ): Promise<PagedResponse<Website> | unknown> {
+    const visibleQuery = { ...query, includeTeams: true };
     if (!this.#config.websiteIds) {
-      return requireWebsitePage(await this.get<unknown>("websites", query, signal));
+      return requireWebsitePage(await this.get<unknown>("websites", visibleQuery, signal));
     }
 
     const requestedPage = typeof query.page === "number" ? query.page : 1;
     const requestedPageSize = typeof query.pageSize === "number" ? query.pageSize : 20;
-    const upstreamQuery = { ...query, page: 1, pageSize: 100 };
+    const upstreamQuery = { ...visibleQuery, page: 1, pageSize: 100 };
     const firstPage = requireWebsitePage(
       await this.get<unknown>("websites", upstreamQuery, signal),
     );

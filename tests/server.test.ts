@@ -185,6 +185,8 @@ describe("Umami Compass MCP server", () => {
 
     expect(result.structuredContent).toMatchObject({
       data: {
+        accessStatus: "authorized",
+        dataStatus: "available",
         points: points.slice(0, 2),
         pointsTruncated: true,
         totalPoints: 4,
@@ -196,6 +198,76 @@ describe("Umami Compass MCP server", () => {
           bucketsTruncated: true,
           totalBuckets: 3,
         },
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains authorized empty heatmap results", async () => {
+    const fetchMock = vi
+      .fn<Fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          mode: "click",
+          pages: [],
+          points: [],
+          snapshot: null,
+          scroll: { buckets: [], totalSessions: 0 },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ enabled: true, replayEnabled: true, heatmapEnabled: true }),
+      );
+    const client = await connect(fetchMock, "heatmaps");
+
+    const result = await client.callTool({
+      name: "get_heatmap",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        accessStatus: "authorized",
+        dataStatus: "empty",
+        recorderStatus: "enabled",
+        emptyReason: "no_data_in_range",
+      },
+    });
+    expect(new URL(String(fetchMock.mock.calls[1]?.[0])).pathname).toContain(
+      `/websites/${WEBSITE_ID}/recorder`,
+    );
+  });
+
+  it("explains authorized empty replay results and disabled capture", async () => {
+    const fetchMock = vi
+      .fn<Fetch>()
+      .mockResolvedValueOnce(Response.json({ data: [], count: 0, page: 1, pageSize: 20 }))
+      .mockResolvedValueOnce(
+        Response.json({ enabled: true, replayEnabled: false, heatmapEnabled: true }),
+      );
+    const client = await connect(fetchMock, "replay");
+
+    const result = await client.callTool({
+      name: "list_replays",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        data: [],
+        count: 0,
+        accessStatus: "authorized",
+        dataStatus: "empty",
+        recorderStatus: "disabled",
+        emptyReason: "replay_disabled",
       },
     });
   });
@@ -281,6 +353,76 @@ describe("Umami Compass MCP server", () => {
       type: "performance",
       parameters: { metric: "lcp", timezone: "UTC" },
     });
+  });
+
+  it("filters invalid performance page rows and ranks numeric p75 values", async () => {
+    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
+      Response.json({
+        chart: [],
+        summary: { lcp: { p50: 100, p75: 150, p95: 200 }, count: 12 },
+        pages: [
+          { name: "/missing", p50: null, p75: null, p95: null, count: "1" },
+          { name: "/fast", p50: "80", p75: "100", p95: "140", count: "10" },
+          { name: "/slow", p50: "180", p75: "250", p95: "400", count: "2" },
+        ],
+        pageTitles: [],
+        devices: [],
+        browsers: [],
+      }),
+    );
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_performance_breakdown",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        metric: "lcp",
+        dimension: "page",
+        limit: 2,
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        invalidItemsExcluded: 1,
+        items: [
+          { name: "/slow", p50: 180, p75: 250, p95: 400, count: 2 },
+          { name: "/fast", p50: 80, p75: 100, p95: 140, count: 10 },
+        ],
+        itemsTruncated: false,
+        totalItems: 2,
+      },
+    });
+  });
+
+  it.each(["segment", "cohort"] as const)("accepts Umami's paged %s response", async (type) => {
+    const segments = [
+      { id: "1f215ff2-fbee-4ff8-a875-32f47700bbf3", name: "Returning", type },
+      { id: "7af8e5ad-83f1-4f50-8db6-26d95b32ec19", name: "Paid", type },
+    ];
+    const fetchMock = vi
+      .fn<Fetch>()
+      .mockResolvedValue(Response.json({ data: segments, count: 3, page: 1, pageSize: 10 }));
+    const client = await connect(fetchMock, "reports");
+
+    const result = await client.callTool({
+      name: "list_segments",
+      arguments: { websiteId: WEBSITE_ID, type, limit: 50 },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual({
+      data: {
+        type,
+        items: segments,
+        itemLimit: 50,
+        itemsTruncated: true,
+        totalItems: 3,
+      },
+    });
+    expect(new URL(String(fetchMock.mock.calls[0]?.[0])).searchParams.get("type")).toBe(type);
   });
 
   it("runs a typed read-only funnel report with bounded steps", async () => {
@@ -423,6 +565,86 @@ describe("Umami Compass MCP server", () => {
         itemLimit: 2,
         itemsTruncated: true,
         totalItems: 3,
+      },
+    });
+  });
+
+  it("normalizes safe analytics numbers without coercing identifiers or arbitrary values", async () => {
+    const sessionId = "1f215ff2-fbee-4ff8-a875-32f47700bbf3";
+    const client = await connect(
+      vi.fn<Fetch>().mockResolvedValue(
+        Response.json({
+          id: sessionId,
+          distinctId: "00042",
+          views: "2",
+          visits: "1",
+          events: "3",
+          totaltime: "390",
+          count: "9007199254740993",
+          value: "002",
+        }),
+      ),
+      "sessions",
+    );
+
+    const result = await client.callTool({
+      name: "get_session",
+      arguments: { websiteId: WEBSITE_ID, sessionId },
+    });
+
+    expect(result.structuredContent).toEqual({
+      data: {
+        id: sessionId,
+        distinctId: "00042",
+        views: 2,
+        visits: 1,
+        events: 3,
+        totaltime: 390,
+        count: "9007199254740993",
+        value: "002",
+      },
+    });
+  });
+
+  it("normalizes breakdown aggregate strings", async () => {
+    const client = await connect(
+      vi.fn<Fetch>().mockResolvedValue(
+        Response.json([
+          {
+            path: "/",
+            views: "29602",
+            visitors: "12000",
+            visits: "14000",
+            bounces: "8000",
+            totaltime: "900000",
+          },
+        ]),
+      ),
+      "reports",
+    );
+
+    const result = await client.callTool({
+      name: "run_breakdown_report",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        fields: ["path"],
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        items: [
+          {
+            path: "/",
+            views: 29602,
+            visitors: 12000,
+            visits: 14000,
+            bounces: 8000,
+            totaltime: 900000,
+          },
+        ],
       },
     });
   });

@@ -4,6 +4,16 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-13
+
+### Fixed
+
+- Include team-owned websites in `list_websites` discovery and optional allowlist filtering.
+- Parse Umami's paged segment/cohort response instead of rejecting it as an invalid array.
+- Exclude page performance rows with missing percentiles, normalize their numeric fields, and rank valid rows by p75.
+- Distinguish authorized empty replay and heatmap results from permission failures, including recorder and feature status where available.
+- Normalize safe numeric SQL aggregates such as `views`, `visits`, and `totaltime` without coercing identifiers or arbitrary property values.
+
 ## [0.1.0] - 2026-07-13
 
 ### Added

@@ -1,10 +1,15 @@
 import { z } from "zod";
 import type { HeatmapReportRequest } from "../../api/types.js";
 import { parseTimeRange } from "../../time.js";
+import { describeRecorderDataStatus, recorderDataStatusShape } from "../recorder-status.js";
 import { reportFilters, requireRecord } from "../report-utils.js";
 import { READ_ONLY_ANNOTATIONS, runTool } from "../result.js";
 import { filtersSchema, recordOutputSchema, timeSchema, uuidSchema } from "../schemas.js";
 import type { ToolModule } from "../tool-module.js";
+
+const heatmapOutputSchema = {
+  data: recordOutputSchema.data.extend(recorderDataStatusShape).passthrough(),
+};
 
 function boundHeatmapResult(
   value: unknown,
@@ -56,6 +61,20 @@ function boundHeatmapResult(
   };
 }
 
+function hasHeatmapData(
+  value: Record<string, unknown>,
+  mode: "click" | "scroll",
+  urlPath: string | undefined,
+): boolean {
+  if (urlPath === undefined) return Array.isArray(value.pages) && value.pages.length > 0;
+  if (mode === "click") return Array.isArray(value.points) && value.points.length > 0;
+  const scroll =
+    typeof value.scroll === "object" && value.scroll !== null && !Array.isArray(value.scroll)
+      ? (value.scroll as Record<string, unknown>)
+      : undefined;
+  return Array.isArray(scroll?.buckets) && scroll.buckets.length > 0;
+}
+
 export const heatmapsModule: ToolModule = {
   id: "heatmaps",
   access: "read",
@@ -65,7 +84,7 @@ export const heatmapsModule: ToolModule = {
       {
         title: "Get an Umami heatmap",
         description:
-          "Get Umami 3.2 click or scroll heatmap data. Omit urlPath to list available pages; provide it for bounded detail points.",
+          "Get Umami 3.2 click or scroll heatmap data. Successful responses state whether data is available and why an authorized result is empty. Omit urlPath to list pages; provide it for bounded detail.",
         inputSchema: {
           websiteId: uuidSchema,
           start: timeSchema,
@@ -77,7 +96,7 @@ export const heatmapsModule: ToolModule = {
           maxPages: z.number().int().min(1).max(500).default(100),
           filters: filtersSchema.optional(),
         },
-        outputSchema: recordOutputSchema,
+        outputSchema: heatmapOutputSchema,
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, mode, urlPath, maxPoints, maxBuckets, maxPages, filters }, extra) =>
@@ -95,7 +114,21 @@ export const heatmapsModule: ToolModule = {
             filters: reportFilters(filters),
           };
           const result = requireRecord(await client.getHeatmapReport(body, extra.signal));
-          return boundHeatmapResult(result, { maxBuckets, maxPages, maxPoints });
+          const status = await describeRecorderDataStatus(
+            client,
+            websiteId,
+            "heatmap",
+            hasHeatmapData(result, mode, urlPath),
+            urlPath === undefined ? "no_data_in_range" : "no_data_for_page",
+            extra.signal,
+          );
+          return {
+            ...(boundHeatmapResult(result, { maxBuckets, maxPages, maxPoints }) as Record<
+              string,
+              unknown
+            >),
+            ...status,
+          };
         }),
     );
   },
