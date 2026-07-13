@@ -1,0 +1,31 @@
+name: Feature proposal
+description: Propose a new capability or endpoint
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and user value
+    validations:
+      required: true
+  - type: input
+    id: endpoint
+    attributes:
+      label: Umami documentation or source reference
+      placeholder: https://github.com/umami-software/umami/...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed MCP contract
+      description: Include tool name, inputs, output, toolset, and read/write classification.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security, privacy, and context-size impact
+    validations:
+      required: true

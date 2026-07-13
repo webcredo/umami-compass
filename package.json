@@ -1,0 +1,78 @@
+{
+  "name": "umami-compass",
+  "version": "0.1.0",
+  "description": "A secure, read-only MCP server for Umami Analytics 3.2+ — Cloud and self-hosted",
+  "license": "MIT",
+  "author": "webcredo",
+  "homepage": "https://github.com/webcredo/umami-compass#readme",
+  "bugs": {
+    "url": "https://github.com/webcredo/umami-compass/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/webcredo/umami-compass.git"
+  },
+  "mcpName": "io.github.webcredo/umami-compass",
+  "type": "module",
+  "sideEffects": false,
+  "bin": {
+    "umami-compass": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "server.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "dev": "tsx src/cli.ts",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "prepack": "pnpm check",
+    "smoke:package": "node scripts/smoke-package.mjs",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "analytics",
+    "core-web-vitals",
+    "heatmaps",
+    "mcp",
+    "model-context-protocol",
+    "privacy",
+    "self-hosted",
+    "umami"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.12",
+    "@types/node": "^22.5.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

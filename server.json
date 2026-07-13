@@ -1,0 +1,80 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.webcredo/umami-compass",
+  "title": "Umami Compass",
+  "description": "Secure Umami Analytics MCP server for Cloud and self-hosted deployments",
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/webcredo/umami-compass",
+  "repository": {
+    "url": "https://github.com/webcredo/umami-compass",
+    "source": "github",
+    "id": "1298894734"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "umami-compass",
+      "version": "0.1.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "UMAMI_API_KEY",
+          "description": "Umami Cloud or client API key",
+          "isSecret": true,
+          "isRequired": false
+        },
+        {
+          "name": "UMAMI_ACCESS_TOKEN",
+          "description": "Existing self-hosted Bearer token",
+          "isSecret": true,
+          "isRequired": false
+        },
+        {
+          "name": "UMAMI_USERNAME",
+          "description": "Self-hosted Umami username",
+          "isRequired": false
+        },
+        {
+          "name": "UMAMI_PASSWORD",
+          "description": "Self-hosted Umami password",
+          "isSecret": true,
+          "isRequired": false
+        },
+        {
+          "name": "UMAMI_URL",
+          "description": "Self-hosted Umami instance origin",
+          "isRequired": false,
+          "placeholder": "https://analytics.example.com"
+        },
+        {
+          "name": "UMAMI_API_URL",
+          "description": "Optional exact Umami API root for a reverse proxy",
+          "isRequired": false,
+          "placeholder": "https://analytics.example.com/custom/api"
+        },
+        {
+          "name": "UMAMI_WEBSITE_IDS",
+          "description": "Optional comma-separated website UUID allowlist",
+          "isRequired": false
+        },
+        {
+          "name": "UMAMI_TOOLSETS",
+          "description": "Comma-separated toolsets or all",
+          "isRequired": false,
+          "default": "core",
+          "placeholder": "core,events,sessions,performance,reports,revenue,replay,heatmaps"
+        },
+        {
+          "name": "UMAMI_MAX_RESPONSE_BYTES",
+          "description": "Maximum decoded upstream JSON response size in bytes",
+          "isRequired": false,
+          "default": "10485760"
+        }
+      ]
+    }
+  ]
+}

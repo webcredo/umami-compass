@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# Local Remotion video generator and render workspace. Only curated final media
+# copied into docs/assets is versioned.
+marketing/remotion/
+.remotion/

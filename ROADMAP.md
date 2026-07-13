@@ -1,0 +1,32 @@
+# Roadmap
+
+The roadmap describes direction, not a compatibility promise. Proposals should be discussed in an issue before implementation.
+
+## 0.1 — read-only foundation
+
+- Validate core analytics, Web Vitals, analytical reports, saved reports/segments, revenue, replay metadata, and heatmaps against Umami Cloud and self-hosted 3.2 fixtures.
+- Publish a signed/provenance-backed npm package and MCP Registry entry.
+- Document client setup and least-privilege deployment.
+
+## 0.2 — deeper analysis
+
+- Event and session property reports with bounded cardinality.
+- Revenue chart/session reports.
+- Expanded metrics, weekly sessions, and bounded replay detail.
+- Saved replay metadata where public API stability permits.
+- Capability discovery for differences between Cloud and self-hosted releases.
+
+## 0.3 — remote deployment profile
+
+- Streamable HTTP only with MCP-compliant OAuth 2.1 resource-server behavior.
+- Tenant isolation, rate limits, audit logs, deployment health checks, and observability without secrets.
+
+## Future — management modules
+
+- Separate package/module boundary for create, update, archive, share, and report management.
+- Disabled by default with explicit scopes and operator opt-in.
+- Human confirmation for destructive or externally visible changes.
+- Dry-run or diff previews where the Umami API permits them.
+- Idempotency, audit records, rollback guidance, and a dedicated security review.
+
+The read-only profile remains available and the default even after management capabilities exist.

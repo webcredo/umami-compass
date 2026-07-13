@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible problem without sharing private analytics data
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, cookies, raw visitor data, or replay payloads. Report security issues privately as described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Umami Compass version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: umami
+    attributes:
+      label: Umami version and deployment
+      placeholder: 3.2.0, Cloud or self-hosted
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Authentication mode
+      options:
+        - API key (do not paste it)
+        - Access token (do not paste it)
+        - Username/password (do not paste them)
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Use redacted/synthetic identifiers and data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
