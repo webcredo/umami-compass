@@ -7,7 +7,7 @@ coverage/
 *.log
 .DS_Store
 
-# Local Remotion video generator and render workspace. Only curated final media
-# copied into docs/assets is versioned.
+# Local Remotion generator, render workspace, and generated demo video.
 marketing/remotion/
 .remotion/
+docs/assets/umami-compass-demo.mp4
