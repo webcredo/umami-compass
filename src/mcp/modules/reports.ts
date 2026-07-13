@@ -454,6 +454,22 @@ export const reportsModule: ToolModule = {
           async () => {
             const period = parseTimeRange(start, end, config.maxRangeDays);
             const { channel, ...analyticsFilters } = filters ?? {};
+            if ((channel !== undefined || fields.includes("channel")) && fields.includes("event")) {
+              throw new UmamiError(
+                "VALIDATION_ERROR",
+                "Umami cannot cross-tabulate attributed channels with custom events.",
+              );
+            }
+            if (
+              analyticsFilters.match === "any" &&
+              ((channel !== undefined && fields.some((field) => field !== "channel")) ||
+                (fields.includes("channel") && fields.length > 1))
+            ) {
+              throw new UmamiError(
+                "VALIDATION_ERROR",
+                'Derived channel cross-tabs cannot be combined with filters.match="any" because Umami cannot require candidate predicates outside that OR group.',
+              );
+            }
             let trafficQuality:
               | ({ status: "available" } & Awaited<ReturnType<typeof assessReferralSpam>>)
               | { status: "unavailable"; error: unknown };
