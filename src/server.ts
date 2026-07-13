@@ -18,6 +18,7 @@ import {
   READ_ONLY_POLICY,
   type ToolModule,
 } from "./mcp/tool-module.js";
+import { getServerInfo } from "./server-info.js";
 import { VERSION } from "./version.js";
 
 export const BUILTIN_MODULES: readonly ToolModule[] = [
@@ -102,21 +103,7 @@ export function createServer(options: CreateServerOptions): McpServer {
         {
           uri: uri.href,
           mimeType: "application/json",
-          text: JSON.stringify({
-            version: VERSION,
-            access: "read-only",
-            authType: options.config.auth.type,
-            enabledToolsets: [...options.config.toolsets],
-            scope: {
-              websiteAllowlistSize: options.config.websiteIds?.size ?? null,
-              teamAllowlistSize: options.config.teamIds?.size ?? null,
-            },
-            limits: {
-              maxRangeDays: options.config.maxRangeDays,
-              maxResponseBytes: options.config.maxResponseBytes,
-              requestTimeoutMs: options.config.requestTimeoutMs,
-            },
-          }),
+          text: JSON.stringify(getServerInfo(options.config)),
         },
       ],
     }),

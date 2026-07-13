@@ -90,7 +90,7 @@ afterEach(async () => {
 });
 
 describe("Umami Compass insights", () => {
-  it("exposes five bounded read-only insight workflows", async () => {
+  it("exposes six bounded read-only insight workflows", async () => {
     const client = await connect(vi.fn<Fetch>());
     const result = await client.listTools();
 
@@ -98,6 +98,7 @@ describe("Umami Compass insights", () => {
       "resolve_website",
       "get_portfolio_overview",
       "explain_traffic_change",
+      "compare_traffic_series",
       "analyze_release_impact",
       "tracking_health_check",
     ]);
@@ -458,6 +459,174 @@ describe("Umami Compass insights", () => {
     });
   });
 
+  it("flags referral-spam evidence directly in a traffic explanation", async () => {
+    const currentStart = Date.parse("2026-07-01T00:00:00.000Z");
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        expect(url.searchParams.get("type")).toBe("referrer");
+        return json([
+          {
+            name: "xpwesthmfqphh.com",
+            pageviews: 100,
+            visitors: 100,
+            visits: 100,
+            bounces: 98,
+            totaltime: 0,
+          },
+        ]);
+      }
+      const isCurrent = Number(url.searchParams.get("startAt")) >= currentStart;
+      if (url.pathname.endsWith("/stats")) return json(plainTotals(isCurrent ? 100 : 80));
+      if (url.pathname.endsWith("/metrics")) {
+        return json([{ x: "/", y: isCurrent ? 50 : 40 }]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "explain_traffic_change",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        dimensions: ["path"],
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        trafficQuality: {
+          trafficSegment: "all",
+          exclusionApplied: false,
+          current: {
+            status: "available",
+            suspiciousReferrers: [{ name: "xpwesthmfqphh.com", confidence: "high" }],
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(result.structuredContent)).toContain("referral-spam pattern");
+  });
+
+  it("filters explain_traffic_change to one attributed channel", async () => {
+    const currentStart = Date.parse("2026-07-01T00:00:00.000Z");
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      const isCurrent = Number(url.searchParams.get("startAt")) >= currentStart;
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        if (url.searchParams.get("type") === "referrer") return json([]);
+        const mobile = url.searchParams.get("device") === "eq.mobile";
+        return json([
+          {
+            name: "direct",
+            pageviews: mobile ? (isCurrent ? 40 : 15) : isCurrent ? 70 : 50,
+            visitors: mobile ? (isCurrent ? 30 : 10) : isCurrent ? 50 : 40,
+            visits: mobile ? (isCurrent ? 35 : 12) : isCurrent ? 60 : 45,
+            bounces: 5,
+            totaltime: 200,
+          },
+        ]);
+      }
+      if (url.pathname.endsWith("/metrics")) {
+        expect(url.searchParams.get("type")).toBe("device");
+        return json([{ x: "mobile", y: isCurrent ? 30 : 10 }]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "explain_traffic_change",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        dimensions: ["channel", "device"],
+        filters: { channel: "direct" },
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        channel: "direct",
+        current: { pageviews: 70, visitors: 50 },
+        comparison: { pageviews: 50, visitors: 40 },
+        breakdowns: [
+          { dimension: "channel", rows: [{ name: "direct", delta: 10 }] },
+          {
+            dimension: "device",
+            rows: [{ name: "mobile", current: 30, comparison: 10, delta: 20 }],
+            dataQuality: { fanoutRequests: 2 },
+          },
+        ],
+      },
+    });
+  });
+
+  it("aligns daily current and comparison series to locate a break date", async () => {
+    const currentStart = Date.parse("2026-07-01T00:00:00.000Z");
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/metrics/expanded")) return json([]);
+      if (url.pathname.endsWith("/pageviews")) {
+        const isCurrent = Number(url.searchParams.get("startAt")) >= currentStart;
+        return json({
+          pageviews: isCurrent
+            ? [
+                { x: "2026-07-01", y: 100 },
+                { x: "2026-07-02", y: 10 },
+              ]
+            : [
+                { x: "2026-06-29", y: 90 },
+                { x: "2026-06-30", y: 80 },
+              ],
+          sessions: isCurrent
+            ? [
+                { x: "2026-07-01", y: 70 },
+                { x: "2026-07-02", y: 8 },
+              ]
+            : [
+                { x: "2026-06-29", y: 65 },
+                { x: "2026-06-30", y: 60 },
+              ],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "compare_traffic_series",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        unit: "day",
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        buckets: [
+          { index: 0, pageviewChange: { absolute: 10 } },
+          { index: 1, pageviewChange: { absolute: -70, percent: -87.5 } },
+        ],
+      },
+      meta: { dataStatus: "available", timezone: "UTC" },
+    });
+  });
+
   it("compares equal release windows and reports mixed traffic and performance evidence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime("2026-07-13T12:00:00.000Z");
@@ -699,6 +868,51 @@ describe("Umami Compass insights", () => {
         issues: [{ code: "RECORDER_DISABLED", check: "recorder" }],
       },
       meta: { dataStatus: "available" },
+    });
+  });
+
+  it("reports conservative referral-spam evidence as a health warning", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-13T12:00:00.000Z");
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/websites")) {
+        return json(websitePage([{ id: WEBSITE_ID, name: "Store", domain: "store.example" }]));
+      }
+      if (url.pathname.endsWith("/teams")) return json(websitePage([]));
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        return json([
+          {
+            name: "a.xpwesthmfqphh.com",
+            pageviews: 12,
+            visitors: 12,
+            visits: 12,
+            bounces: 12,
+            totaltime: 0,
+          },
+        ]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "tracking_health_check",
+      arguments: { checks: ["referral_spam"] },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        summary: { warnings: 1, errors: 0 },
+        issues: [
+          {
+            code: "SUSPECTED_REFERRAL_SPAM",
+            check: "referral_spam",
+            evidence: { suspiciousReferrers: [{ name: "a.xpwesthmfqphh.com" }] },
+          },
+        ],
+      },
     });
   });
 });

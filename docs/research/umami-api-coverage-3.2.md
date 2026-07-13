@@ -15,7 +15,7 @@ This matrix was checked against the tagged Umami [`v3.2.0`](https://github.com/u
 | Revenue | revenue stats and metrics | `revenue`, opt-in |
 | Replays | replay list metadata | `replay`, opt-in; raw rrweb event payloads excluded |
 | Heatmaps | `POST /reports/heatmap` | `heatmaps`, opt-in; click/scroll page discovery and at most 1,000 detail points |
-| Decision workflows | bounded combinations of websites, stats, metrics, daterange, events, recorder, and performance | `insights`, default; website resolution, portfolio, traffic-change, release-impact, and tracking-health results |
+| Decision workflows | bounded combinations of websites, stats, metrics, expanded metrics, pageviews, daterange, events, recorder, and performance | `insights`, default; website resolution, portfolio, traffic-change, aligned series comparison, release-impact, traffic-quality, and tracking-health results |
 
 ## Candidate read-only additions
 
@@ -26,7 +26,7 @@ This matrix was checked against the tagged Umami [`v3.2.0`](https://github.com/u
 | P1 | Revenue chart and revenue sessions | Chart is straightforward; session rows need currency validation, paging, and sensitivity tests. |
 | P2 | Expanded metrics and weekly sessions | Useful convenience endpoints, but current core tools already provide most decisions with a smaller surface. |
 | P2 | Replay detail, per-session replay lookup, and saved replay metadata | Raw replay events can be very large and can contain sensitive interaction data. A safe summary contract is required first. |
-| P2 | Capability discovery | Cloud accounts, self-hosted versions, plans, and section permissions can differ; an official capability endpoint would be preferable to version guessing. |
+| P2 | Upstream capability discovery | `get_server_info` reports Compass capabilities. Cloud plans, self-hosted versions, and section permissions still need an official Umami capability endpoint rather than version guessing. |
 
 ## Deliberately excluded mutations
 

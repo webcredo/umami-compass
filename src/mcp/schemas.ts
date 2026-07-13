@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { UmamiError } from "../api/errors.js";
-import type { Query } from "../api/types.js";
+import type { Query, QueryValue } from "../api/types.js";
 import { parseTimeRange, type TimeInput } from "../time.js";
 
 export const uuidSchema = z
@@ -28,44 +28,208 @@ export const unitSchema = z.enum(["minute", "hour", "day", "month", "year"]).opt
 export const pageSchema = z.number().int().min(1).max(10_000).default(1);
 export const pageSizeSchema = z.number().int().min(1).max(100).default(20);
 
+export const filterOperatorSchema = z.enum([
+  "equals",
+  "not_equals",
+  "contains",
+  "not_contains",
+  "regex",
+  "not_regex",
+  "is_empty",
+  "is_not_empty",
+]);
+
+const filterConditionSchema = z
+  .object({
+    operator: filterOperatorSchema,
+    value: z
+      .union([z.string().max(2_000), z.array(z.string().max(2_000)).min(1).max(100)])
+      .optional(),
+  })
+  .strict()
+  .superRefine(({ operator, value }, context) => {
+    const emptyOperator = operator === "is_empty" || operator === "is_not_empty";
+    if (emptyOperator && value !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: `${operator} does not accept a value`,
+        path: ["value"],
+      });
+    } else if (!emptyOperator && value === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: `${operator} requires a value`,
+        path: ["value"],
+      });
+    }
+    if (Array.isArray(value) && !["equals", "not_equals"].includes(operator)) {
+      context.addIssue({
+        code: "custom",
+        message: `${operator} accepts one string value`,
+        path: ["value"],
+      });
+    }
+    if (
+      (operator === "equals" || operator === "not_equals") &&
+      (Array.isArray(value) ? value : value === undefined ? [] : [value]).some((item) =>
+        item.includes(","),
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "equals values cannot contain commas; pass separate values in the array",
+        path: ["value"],
+      });
+    }
+  });
+
+const textFilterSchema = (maximum: number) =>
+  z.union([
+    z.string().max(maximum),
+    filterConditionSchema,
+    z.array(filterConditionSchema).min(1).max(10),
+  ]);
+
 export const filtersSchema = z
   .object({
-    browser: z.string().max(200).optional(),
-    city: z.string().max(200).optional(),
+    browser: textFilterSchema(200).optional(),
+    city: textFilterSchema(200).optional(),
     cohort: uuidSchema.optional(),
-    country: z.string().max(10).optional(),
-    device: z.string().max(200).optional(),
-    distinctId: z.string().max(500).optional(),
+    country: textFilterSchema(10).optional(),
+    device: textFilterSchema(200).optional(),
+    distinctId: textFilterSchema(500).optional(),
     eventType: z.number().int().positive().optional(),
-    event: z.string().max(500).optional(),
+    event: textFilterSchema(500).optional(),
     excludeBounce: z.boolean().optional(),
-    hostname: z.string().max(500).optional(),
-    language: z.string().max(100).optional(),
-    os: z.string().max(200).optional(),
+    hostname: textFilterSchema(500).optional(),
+    language: textFilterSchema(100).optional(),
+    os: textFilterSchema(200).optional(),
     match: z.enum(["all", "any"]).optional(),
-    path: z.string().max(2_000).optional(),
-    query: z.string().max(2_000).optional(),
-    referrer: z.string().max(2_000).optional(),
-    region: z.string().max(200).optional(),
+    path: textFilterSchema(2_000).optional(),
+    query: textFilterSchema(2_000).optional(),
+    referrer: textFilterSchema(2_000).optional(),
+    region: textFilterSchema(200).optional(),
     segment: uuidSchema.optional(),
-    tag: z.string().max(500).optional(),
-    title: z.string().max(1_000).optional(),
-    utmCampaign: z.string().max(500).optional(),
-    utmContent: z.string().max(500).optional(),
-    utmMedium: z.string().max(500).optional(),
-    utmSource: z.string().max(500).optional(),
-    utmTerm: z.string().max(500).optional(),
+    tag: textFilterSchema(500).optional(),
+    title: textFilterSchema(1_000).optional(),
+    utmCampaign: textFilterSchema(500).optional(),
+    utmContent: textFilterSchema(500).optional(),
+    utmMedium: textFilterSchema(500).optional(),
+    utmSource: textFilterSchema(500).optional(),
+    utmTerm: textFilterSchema(500).optional(),
   })
   .strict();
+
+export const TRAFFIC_CHANNELS = [
+  "direct",
+  "paidAds",
+  "referral",
+  "affiliate",
+  "sms",
+  "llm",
+  "organicSearch",
+  "paidSearch",
+  "organicSocial",
+  "paidSocial",
+  "email",
+  "organicShopping",
+  "paidShopping",
+  "organicVideo",
+  "paidVideo",
+] as const;
+
+export const trafficChannelSchema = z.enum(TRAFFIC_CHANNELS);
+
+export const segmentedFiltersSchema = filtersSchema.extend({
+  channel: trafficChannelSchema.optional(),
+});
+
+export const trafficSegmentSchema = z.enum(["all", "human"]).default("all");
+
+type FilterCondition = z.infer<typeof filterConditionSchema>;
+
+const UPSTREAM_OPERATORS: Record<FilterCondition["operator"], string> = {
+  equals: "eq",
+  not_equals: "neq",
+  contains: "c",
+  not_contains: "dnc",
+  regex: "re",
+  not_regex: "nre",
+  is_empty: "eq",
+  is_not_empty: "neq",
+};
+
+function isFilterCondition(value: unknown): value is FilterCondition {
+  return (
+    typeof value === "object" && value !== null && !Array.isArray(value) && "operator" in value
+  );
+}
+
+function encodeFilterCondition(condition: FilterCondition): string {
+  const value =
+    condition.operator === "is_empty" || condition.operator === "is_not_empty"
+      ? ""
+      : Array.isArray(condition.value)
+        ? condition.value.join(",")
+        : condition.value;
+  return `${UPSTREAM_OPERATORS[condition.operator]}.${value ?? ""}`;
+}
+
+export function serializeFilters(filters: Record<string, unknown> | undefined): Query {
+  const serialized: Record<string, QueryValue> = {};
+  for (const [name, value] of Object.entries(filters ?? {})) {
+    if (value === undefined) continue;
+    const conditions = isFilterCondition(value)
+      ? [value]
+      : Array.isArray(value) && value.every(isFilterCondition)
+        ? value
+        : undefined;
+    if (!conditions) {
+      if (name === "referrer" && value === "") {
+        serialized.domain1 = "eq.";
+        continue;
+      }
+      serialized[name] = value as QueryValue;
+      continue;
+    }
+
+    // Umami's public `referrer` filter always removes internal/direct rows. Its
+    // equivalent `domain` column has neutral equality semantics, and a numeric
+    // suffix makes it survive the upstream route's dynamic-filter parser.
+    const upstreamName = name === "referrer" ? "domain" : name;
+    conditions.forEach((condition, index) => {
+      const suffix = name === "referrer" ? index + 1 : index;
+      const key = suffix === 0 ? upstreamName : `${upstreamName}${suffix}`;
+      serialized[key] = encodeFilterCondition(condition);
+    });
+  }
+  return serialized;
+}
+
+export function appendReferrerExclusions(filters: Query, domains: readonly string[]): Query {
+  const values = [...new Set(domains.map((domain) => domain.trim()).filter(Boolean))].filter(
+    (domain) => !domain.includes(","),
+  );
+  if (values.length === 0) return filters;
+  let suffix = 1;
+  while (`domain${suffix}` in filters) suffix += 1;
+  return { ...filters, [`domain${suffix}`]: `neq.${values.join(",")}` };
+}
 
 export function rangeQuery(
   start: TimeInput,
   end: TimeInput,
   maxRangeDays: number,
-  options: { filters?: z.infer<typeof filtersSchema>; timezone?: string; unit?: string } = {},
+  options: {
+    filters?: z.infer<typeof filtersSchema>;
+    serializedFilters?: Query;
+    timezone?: string;
+    unit?: string;
+  } = {},
 ): Query {
   const range = parseTimeRange(start, end, maxRangeDays);
-  const { excludeBounce, ...filters } = options.filters ?? {};
+  const { excludeBounce, ...filters } =
+    options.serializedFilters ?? serializeFilters(options.filters);
   return {
     ...range,
     ...filters,
@@ -89,6 +253,7 @@ export function seriesRangeQuery(
   maxRangeDays: number,
   options: {
     filters?: z.infer<typeof filtersSchema>;
+    serializedFilters?: Query;
     timezone?: string;
     unit?: keyof typeof UNIT_MILLISECONDS;
     seriesCount?: number;

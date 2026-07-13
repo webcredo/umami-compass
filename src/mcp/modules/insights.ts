@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { toSafeError, UmamiError } from "../../api/errors.js";
-import type { PagedResponse, Website } from "../../api/types.js";
+import type { PagedResponse, Query, Website } from "../../api/types.js";
 import { parseTimeRange } from "../../time.js";
 import {
   comparePerformance,
@@ -21,14 +21,26 @@ import {
 import { requirePagedResponse } from "../report-utils.js";
 import { READ_ONLY_ANNOTATIONS, runTool } from "../result.js";
 import {
+  appendReferrerExclusions,
   filtersSchema,
   outputSchema,
+  pageviewsDataSchema,
+  parseUpstream,
   rangeQuery,
+  segmentedFiltersSchema,
+  serializeFilters,
+  seriesRangeQuery,
   timeSchema,
   timezoneSchema,
+  trafficSegmentSchema,
   uuidSchema,
 } from "../schemas.js";
 import type { ToolModule } from "../tool-module.js";
+import {
+  assessReferralSpam,
+  type TrafficChannel,
+  type TrafficPeriod,
+} from "../traffic-segmentation.js";
 
 const trafficDimensionSchema = z.enum(TRAFFIC_DIMENSIONS);
 const websiteLimitSchema = z.number().int().min(1).max(50).default(25);
@@ -39,6 +51,76 @@ const releaseTimestampSchema = timeSchema.refine(
     typeof value === "number" || (/T/i.test(value) && /(Z|[+-]\d{2}:?\d{2})$/i.test(value.trim())),
   "releaseAt must be Unix milliseconds or an ISO 8601 date-time with an explicit timezone",
 );
+
+async function safeReferralSpamAssessment(
+  client: Parameters<typeof assessReferralSpam>[0],
+  input: {
+    filters: Query;
+    maxRangeDays: number;
+    period: TrafficPeriod;
+    signal?: AbortSignal;
+    websiteId: string;
+  },
+) {
+  try {
+    return { status: "available" as const, ...(await assessReferralSpam(client, input)) };
+  } catch (error) {
+    return { status: "unavailable" as const, error: toSafeError(error) };
+  }
+}
+
+async function trafficQualityComparison(
+  client: Parameters<typeof assessReferralSpam>[0],
+  input: {
+    comparison: TrafficPeriod;
+    current: TrafficPeriod;
+    filters: Query;
+    maxRangeDays: number;
+    signal?: AbortSignal;
+    trafficSegment: "all" | "human";
+    websiteId: string;
+  },
+) {
+  const assess = (period: TrafficPeriod) =>
+    safeReferralSpamAssessment(client, {
+      filters: input.filters,
+      maxRangeDays: input.maxRangeDays,
+      period,
+      signal: input.signal,
+      websiteId: input.websiteId,
+    });
+  const [current, comparison] = await Promise.all([
+    assess(input.current),
+    assess(input.comparison),
+  ]);
+  if (
+    input.trafficSegment === "human" &&
+    (current.status !== "available" || comparison.status !== "available")
+  ) {
+    throw new UmamiError(
+      "UPSTREAM_ERROR",
+      "The human-traffic preset could not assess referral spam for both periods.",
+    );
+  }
+  const excludedReferrers =
+    input.trafficSegment === "human"
+      ? [
+          ...new Set(
+            [current, comparison].flatMap((assessment) =>
+              assessment.status === "available" ? assessment.excludedReferrers : [],
+            ),
+          ),
+        ]
+      : [];
+  return {
+    method: "conservative_heuristic" as const,
+    trafficSegment: input.trafficSegment,
+    current,
+    comparison,
+    excludedReferrers,
+    exclusionApplied: excludedReferrers.length > 0,
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -236,7 +318,7 @@ function parseMetricNames(value: unknown): Array<{ name: string; value: number }
   });
 }
 
-type HealthCheckName = "traffic" | "domain" | "events" | "recorder";
+type HealthCheckName = "traffic" | "domain" | "events" | "recorder" | "referral_spam";
 
 async function healthSite(
   client: Parameters<typeof fetchWebsiteStats>[0],
@@ -410,6 +492,31 @@ async function healthSite(
         return;
       }
 
+      if (check === "referral_spam") {
+        const assessment = await assessReferralSpam(client, {
+          filters: {},
+          maxRangeDays: options.maxRangeDays,
+          period,
+          signal: options.signal,
+          websiteId: website.id,
+        });
+        checks.referral_spam = { status: "available", ...assessment };
+        if (assessment.suspiciousReferrers.length > 0) {
+          issues.push({
+            check,
+            code: "SUSPECTED_REFERRAL_SPAM",
+            message:
+              "One or more referrers match a conservative generated-domain, high-bounce, near-zero-duration spam pattern.",
+            severity: "warning",
+            evidence: {
+              suspiciousReferrers: assessment.suspiciousReferrers,
+              heuristic: true,
+            },
+          });
+        }
+        return;
+      }
+
       const recorder = await client.get<Record<string, unknown>>(
         `websites/${encodeURIComponent(website.id)}/recorder`,
         undefined,
@@ -452,11 +559,12 @@ async function healthSite(
     } catch (error) {
       const safeError = toSafeError(error);
       checks[check] = { status: "unavailable", error: safeError };
+      const unavailableIsWarning = safeError.code === "FORBIDDEN" || check === "referral_spam";
       issues.push({
         check,
         code: safeError.code === "FORBIDDEN" ? "PERMISSION_MISSING" : "CHECK_UNAVAILABLE",
         message: safeError.message,
-        severity: safeError.code === "FORBIDDEN" ? "warning" : "error",
+        severity: unavailableIsWarning ? "warning" : "error",
       });
     }
   });
@@ -691,9 +799,11 @@ export const insightsModule: ToolModule = {
             .array(trafficDimensionSchema)
             .min(1)
             .max(6)
-            .default(["path", "referrer", "country", "device", "event"]),
+            .refine((items) => new Set(items).size === items.length, "dimensions must be unique")
+            .optional(),
           limit: z.number().int().min(1).max(20).default(10),
-          filters: filtersSchema.optional(),
+          filters: segmentedFiltersSchema.optional(),
+          trafficSegment: trafficSegmentSchema,
           timezone: timezoneSchema,
         },
         outputSchema,
@@ -710,6 +820,7 @@ export const insightsModule: ToolModule = {
           dimensions,
           limit,
           filters,
+          trafficSegment,
           timezone,
         },
         extra,
@@ -736,19 +847,199 @@ export const insightsModule: ToolModule = {
               comparison = comparisonPeriod(current, comparisonMode);
             }
             const website = await client.getWebsite(websiteId, extra.signal);
+            const { channel, ...analyticsFilters } = filters ?? {};
+            const quality = await trafficQualityComparison(client, {
+              websiteId,
+              current,
+              comparison,
+              filters: serializeFilters(analyticsFilters),
+              maxRangeDays: config.maxRangeDays,
+              signal: extra.signal,
+              trafficSegment,
+            });
+            const effectiveDimensions =
+              dimensions ??
+              (channel
+                ? (["channel", "device"] as TrafficDimension[])
+                : ([...TRAFFIC_DIMENSIONS] as TrafficDimension[]));
+            const traffic = await compareTraffic(client, {
+              website: websiteSummary(website),
+              current,
+              comparison,
+              dimensions: effectiveDimensions,
+              limit,
+              maxRangeDays: config.maxRangeDays,
+              filters: analyticsFilters,
+              channel: channel as TrafficChannel | undefined,
+              excludedReferrers: quality.excludedReferrers,
+              signal: extra.signal,
+            });
+            const suspiciousCount = [quality.current, quality.comparison].reduce(
+              (total, assessment) =>
+                total +
+                (assessment.status === "available" ? assessment.suspiciousReferrers.length : 0),
+              0,
+            );
+            const qualityExplanation =
+              suspiciousCount === 0
+                ? ""
+                : trafficSegment === "human"
+                  ? ` The human-traffic preset excluded ${quality.excludedReferrers.length} suspicious referral domain(s) using a conservative heuristic.`
+                  : ` ${suspiciousCount} period-level referrer row(s) match a conservative referral-spam pattern; verify the trafficQuality evidence or rerun with trafficSegment=human.`;
             return {
               comparisonMode,
               timezone,
-              ...(await compareTraffic(client, {
-                website: websiteSummary(website),
-                current,
-                comparison,
-                dimensions: dimensions as TrafficDimension[],
-                limit,
-                maxRangeDays: config.maxRangeDays,
-                filters,
-                signal: extra.signal,
-              })),
+              ...traffic,
+              explanation: `${traffic.explanation}${qualityExplanation}`,
+              trafficQuality: quality,
+            };
+          },
+          { websiteId, range: { start, end }, timezone },
+        ),
+    );
+
+    server.registerTool(
+      "compare_traffic_series",
+      {
+        title: "Compare traffic time series",
+        description:
+          "Return aligned current and comparison traffic buckets to locate the exact day or hour when traffic changed.",
+        inputSchema: {
+          websiteId: uuidSchema,
+          start: timeSchema,
+          end: timeSchema,
+          comparisonMode: z.enum(["previous", "year_over_year", "custom"]).default("previous"),
+          comparisonStart: timeSchema.optional(),
+          comparisonEnd: timeSchema.optional(),
+          unit: z.enum(["minute", "hour", "day", "month", "year"]).default("day"),
+          filters: filtersSchema.optional(),
+          trafficSegment: trafficSegmentSchema,
+          timezone: timezoneSchema,
+        },
+        outputSchema,
+        annotations: READ_ONLY_ANNOTATIONS,
+      },
+      (
+        {
+          websiteId,
+          start,
+          end,
+          comparisonMode,
+          comparisonStart,
+          comparisonEnd,
+          unit,
+          filters,
+          trafficSegment,
+          timezone,
+        },
+        extra,
+      ) =>
+        runTool(
+          async () => {
+            const current = normalizePeriod(start, end, config.maxRangeDays);
+            let comparison: TimePeriod;
+            if (comparisonMode === "custom") {
+              if (comparisonStart === undefined || comparisonEnd === undefined) {
+                throw new UmamiError(
+                  "VALIDATION_ERROR",
+                  "comparisonStart and comparisonEnd are required for comparisonMode=custom.",
+                );
+              }
+              comparison = normalizePeriod(comparisonStart, comparisonEnd, config.maxRangeDays);
+            } else {
+              if (comparisonStart !== undefined || comparisonEnd !== undefined) {
+                throw new UmamiError(
+                  "VALIDATION_ERROR",
+                  "comparisonStart and comparisonEnd can only be used with comparisonMode=custom.",
+                );
+              }
+              comparison = comparisonPeriod(current, comparisonMode);
+            }
+            await client.assertWebsiteAccessible(websiteId, extra.signal);
+            const serializedFilters = serializeFilters(filters);
+            const quality = await trafficQualityComparison(client, {
+              websiteId,
+              current,
+              comparison,
+              filters: serializedFilters,
+              maxRangeDays: config.maxRangeDays,
+              signal: extra.signal,
+              trafficSegment,
+            });
+            const effectiveFilters = appendReferrerExclusions(
+              serializedFilters,
+              quality.excludedReferrers,
+            );
+            const fetchSeries = async (period: TimePeriod) =>
+              parseUpstream(
+                pageviewsDataSchema,
+                await client.get(
+                  `websites/${encodeURIComponent(websiteId)}/pageviews`,
+                  seriesRangeQuery(period.startAt, period.endAt, config.maxRangeDays, {
+                    serializedFilters: effectiveFilters,
+                    timezone,
+                    unit,
+                    seriesCount: 2,
+                  }),
+                  extra.signal,
+                ),
+                "pageview series",
+              );
+            const [currentSeries, comparisonSeries] = await Promise.all([
+              fetchSeries(current),
+              fetchSeries(comparison),
+            ]);
+            const currentSessions = new Map(
+              currentSeries.sessions.map(({ x, y }) => [String(x), y]),
+            );
+            const comparisonSessions = new Map(
+              comparisonSeries.sessions.map(({ x, y }) => [String(x), y]),
+            );
+            const bucketCount = Math.max(
+              currentSeries.pageviews.length,
+              comparisonSeries.pageviews.length,
+            );
+            const buckets = Array.from({ length: bucketCount }, (_, index) => {
+              const currentPoint = currentSeries.pageviews[index];
+              const comparisonPoint = comparisonSeries.pageviews[index];
+              const currentPageviews = currentPoint?.y ?? 0;
+              const comparisonPageviews = comparisonPoint?.y ?? 0;
+              return {
+                index,
+                current: currentPoint
+                  ? {
+                      x: currentPoint.x,
+                      pageviews: currentPageviews,
+                      sessions: currentSessions.get(String(currentPoint.x)) ?? 0,
+                    }
+                  : null,
+                comparison: comparisonPoint
+                  ? {
+                      x: comparisonPoint.x,
+                      pageviews: comparisonPageviews,
+                      sessions: comparisonSessions.get(String(comparisonPoint.x)) ?? 0,
+                    }
+                  : null,
+                pageviewChange: {
+                  absolute: currentPageviews - comparisonPageviews,
+                  percent: percentChange(currentPageviews, comparisonPageviews),
+                },
+              };
+            });
+            return {
+              dataStatus:
+                currentSeries.pageviews.length === 0 && comparisonSeries.pageviews.length === 0
+                  ? ("empty" as const)
+                  : ("available" as const),
+              comparisonMode,
+              unit,
+              timezone,
+              currentPeriod: isoPeriod(current),
+              comparisonPeriod: isoPeriod(comparison),
+              current: currentSeries,
+              comparison: comparisonSeries,
+              buckets,
+              trafficQuality: quality,
             };
           },
           { websiteId, range: { start, end }, timezone },
@@ -769,10 +1060,12 @@ export const insightsModule: ToolModule = {
             .array(trafficDimensionSchema)
             .min(1)
             .max(6)
-            .default(["path", "referrer", "device", "event"]),
+            .refine((items) => new Set(items).size === items.length, "dimensions must be unique")
+            .optional(),
           limit: z.number().int().min(1).max(20).default(10),
           includePerformance: z.boolean().default(true),
-          filters: filtersSchema.optional(),
+          filters: segmentedFiltersSchema.optional(),
+          trafficSegment: trafficSegmentSchema,
           timezone: timezoneSchema,
         },
         outputSchema,
@@ -787,6 +1080,7 @@ export const insightsModule: ToolModule = {
           limit,
           includePerformance,
           filters,
+          trafficSegment,
           timezone,
         },
         extra,
@@ -811,14 +1105,30 @@ export const insightsModule: ToolModule = {
             const preEnd = releaseTime - 1;
             const pre: TimePeriod = { startAt: preEnd - actualDuration, endAt: preEnd };
             const website = await client.getWebsite(websiteId, extra.signal);
+            const { channel, ...analyticsFilters } = filters ?? {};
+            const quality = await trafficQualityComparison(client, {
+              websiteId,
+              current: post,
+              comparison: pre,
+              filters: serializeFilters(analyticsFilters),
+              maxRangeDays: config.maxRangeDays,
+              signal: extra.signal,
+              trafficSegment,
+            });
             const traffic = await compareTraffic(client, {
               website: websiteSummary(website),
               current: post,
               comparison: pre,
-              dimensions: dimensions as TrafficDimension[],
+              dimensions:
+                dimensions ??
+                (channel
+                  ? (["channel", "device"] as TrafficDimension[])
+                  : (["path", "referrer", "device", "channel", "event"] as TrafficDimension[])),
               limit,
               maxRangeDays: config.maxRangeDays,
-              filters,
+              filters: analyticsFilters,
+              channel: channel as TrafficChannel | undefined,
+              excludedReferrers: quality.excludedReferrers,
               signal: extra.signal,
             });
             const performance = includePerformance
@@ -826,7 +1136,7 @@ export const insightsModule: ToolModule = {
                   websiteId,
                   current: post,
                   comparison: pre,
-                  filters,
+                  filters: analyticsFilters,
                   timezone,
                   signal: extra.signal,
                 })
@@ -908,6 +1218,7 @@ export const insightsModule: ToolModule = {
                   "This is a before/after association. Campaigns, seasonality, outages, and other concurrent changes can produce the same pattern.",
               },
               traffic,
+              trafficQuality: quality,
               performance,
             };
           },
@@ -920,7 +1231,7 @@ export const insightsModule: ToolModule = {
       {
         title: "Check analytics tracking health",
         description:
-          "Audit visible websites for stale or missing traffic, traffic drops, domain mismatches, custom-event availability, recorder configuration, and section permission failures. Disabled optional features are warnings only when marked as expected.",
+          "Audit visible websites for stale or missing traffic, traffic drops, domain mismatches, referral-spam patterns, custom-event availability, recorder configuration, and section permission failures. Disabled optional features are warnings only when marked as expected.",
         inputSchema: {
           websiteLimit: websiteLimitSchema,
           lookbackHours: z.number().int().min(1).max(8_760).default(48),
@@ -928,10 +1239,10 @@ export const insightsModule: ToolModule = {
           dropThresholdPercent: z.number().min(1).max(100).default(50),
           minimumPageviews: z.number().int().min(0).max(1_000_000_000).default(100),
           checks: z
-            .array(z.enum(["traffic", "domain", "events", "recorder"]))
+            .array(z.enum(["traffic", "domain", "events", "recorder", "referral_spam"]))
             .min(1)
-            .max(4)
-            .default(["traffic", "domain", "events", "recorder"]),
+            .max(5)
+            .default(["traffic", "domain", "referral_spam", "events", "recorder"]),
           expectEvents: z.boolean().default(false),
           expectReplay: z.boolean().default(false),
           expectHeatmap: z.boolean().default(false),
@@ -1018,6 +1329,7 @@ export const insightsModule: ToolModule = {
                 "CMS linkage cannot be checked without a separate CMS integration.",
                 "Missing custom events are reported only when expectEvents=true.",
                 "Recorder features are reported as issues only when explicitly expected.",
+                "Referral-spam findings are conservative heuristics, not a definitive bot classification.",
               ],
             };
           },

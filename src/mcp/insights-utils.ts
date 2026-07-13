@@ -1,11 +1,22 @@
 import type { z } from "zod";
 import type { UmamiClient } from "../api/client.js";
 import { toSafeError, UmamiError } from "../api/errors.js";
-import type { PerformanceMetric, Website } from "../api/types.js";
+import type { PerformanceMetric, Query, Website } from "../api/types.js";
 import type { TimeInput } from "../time.js";
 import { parseTimeRange } from "../time.js";
 import { reportFilters } from "./report-utils.js";
-import { type filtersSchema, rangeQuery } from "./schemas.js";
+import {
+  appendReferrerExclusions,
+  type filtersSchema,
+  rangeQuery,
+  serializeFilters,
+} from "./schemas.js";
+import {
+  appendDimensionEquality,
+  fetchExpandedMetricRows,
+  selectChannelTotals,
+  type TrafficChannel,
+} from "./traffic-segmentation.js";
 
 export const TRAFFIC_DIMENSIONS = [
   "path",
@@ -36,6 +47,10 @@ export interface WebsiteStats extends WebsiteTotals {
 }
 
 type Filters = z.infer<typeof filtersSchema> | undefined;
+
+function analysisFilters(filters: Filters, excludedReferrers: readonly string[] = []): Query {
+  return appendReferrerExclusions(serializeFilters(filters), excludedReferrers);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -175,12 +190,13 @@ export async function fetchWebsiteStats(
   maxRangeDays: number,
   filters: Filters,
   signal?: AbortSignal,
+  excludedReferrers: readonly string[] = [],
 ): Promise<WebsiteStats> {
   return parseWebsiteStats(
     await client.get(
       `websites/${encodeURIComponent(websiteId)}/stats`,
       rangeQuery(period.startAt, period.endAt, maxRangeDays, {
-        filters,
+        serializedFilters: analysisFilters(filters, excludedReferrers),
       }),
       signal,
     ),
@@ -198,6 +214,7 @@ interface MetricRowsResult {
 }
 
 const MAX_METRIC_COMPARISON_ROWS = 100;
+const MAX_CHANNEL_COMPARISON_CANDIDATES = 20;
 
 function parseMetricRows(value: unknown): MetricRow[] {
   if (!Array.isArray(value)) {
@@ -222,13 +239,14 @@ async function fetchMetricRows(
   limit: number,
   filters: Filters,
   signal?: AbortSignal,
+  excludedReferrers: readonly string[] = [],
 ): Promise<MetricRowsResult> {
   const rows = parseMetricRows(
     await client.get(
       `websites/${encodeURIComponent(websiteId)}/metrics`,
       {
         ...rangeQuery(period.startAt, period.endAt, maxRangeDays, {
-          filters,
+          serializedFilters: analysisFilters(filters, excludedReferrers),
         }),
         type: dimension,
         limit,
@@ -293,9 +311,11 @@ function diffMetricRows(
 }
 
 export interface TrafficComparisonInput {
+  channel?: TrafficChannel;
   comparison: TimePeriod;
   current: TimePeriod;
   dimensions: readonly TrafficDimension[];
+  excludedReferrers?: readonly string[];
   filters?: Filters;
   limit: number;
   maxRangeDays: number;
@@ -304,17 +324,195 @@ export interface TrafficComparisonInput {
 }
 
 export async function compareTraffic(client: UmamiClient, input: TrafficComparisonInput) {
-  const { comparison, current, dimensions, filters, limit, maxRangeDays, signal, website } = input;
-  const [currentStats, comparisonStats] = await Promise.all([
-    fetchWebsiteStats(client, website.id, current, maxRangeDays, filters, signal),
-    fetchWebsiteStats(client, website.id, comparison, maxRangeDays, filters, signal),
-  ]);
-  const currentTotals = websiteTotals(currentStats);
-  const comparisonTotals = websiteTotals(comparisonStats);
+  const {
+    channel,
+    comparison,
+    current,
+    dimensions,
+    excludedReferrers = [],
+    filters,
+    limit,
+    maxRangeDays,
+    signal,
+    website,
+  } = input;
+  const serializedFilters = analysisFilters(filters, excludedReferrers);
+  let currentTotals: WebsiteTotals;
+  let comparisonTotals: WebsiteTotals;
+  if (channel) {
+    const channelTotals = async (period: TimePeriod): Promise<WebsiteTotals> => {
+      const row = selectChannelTotals(
+        await fetchExpandedMetricRows(client, {
+          filters: serializedFilters,
+          maxRangeDays,
+          period,
+          signal,
+          type: "channel",
+          websiteId: website.id,
+        }),
+        channel,
+      );
+      return {
+        pageviews: row.pageviews,
+        visitors: row.visitors,
+        visits: row.visits,
+        bounces: row.bounces,
+        totaltime: row.totaltime,
+      };
+    };
+    [currentTotals, comparisonTotals] = await Promise.all([
+      channelTotals(current),
+      channelTotals(comparison),
+    ]);
+  } else {
+    const totals = async (period: TimePeriod) =>
+      websiteTotals(
+        await fetchWebsiteStats(
+          client,
+          website.id,
+          period,
+          maxRangeDays,
+          filters,
+          signal,
+          excludedReferrers,
+        ),
+      );
+    [currentTotals, comparisonTotals] = await Promise.all([totals(current), totals(comparison)]);
+  }
   const metricFetchLimit = Math.min(MAX_METRIC_COMPARISON_ROWS, Math.max(limit * 5, 20));
 
-  const breakdowns = await mapConcurrent(dimensions, 3, async (dimension) => {
+  const breakdowns = await mapConcurrent(dimensions, channel ? 1 : 3, async (dimension) => {
     try {
+      if (channel && dimension === "event") {
+        throw new UmamiError(
+          "VALIDATION_ERROR",
+          "Umami cannot cross-tabulate attributed channels with custom events.",
+        );
+      }
+
+      if (dimension === "channel") {
+        const channelRows = async (period: TimePeriod): Promise<MetricRowsResult> => {
+          const rows = await fetchExpandedMetricRows(client, {
+            filters: serializedFilters,
+            maxRangeDays,
+            period,
+            signal,
+            type: "channel",
+            websiteId: website.id,
+          });
+          return {
+            rows: rows
+              .filter(({ name }) => channel === undefined || name === channel)
+              .map(({ name, visitors }) => ({ name, value: visitors })),
+            truncated: false,
+          };
+        };
+        const [currentChannels, comparisonChannels] = await Promise.all([
+          channelRows(current),
+          channelRows(comparison),
+        ]);
+        const difference = diffMetricRows(currentChannels, comparisonChannels, limit);
+        return {
+          dimension,
+          status: "available" as const,
+          measure: "visitors" as const,
+          rows: difference.rows,
+          dataQuality: difference.dataQuality,
+        };
+      }
+
+      if (channel) {
+        const [currentCandidates, comparisonCandidates] = await Promise.all([
+          fetchMetricRows(
+            client,
+            website.id,
+            current,
+            maxRangeDays,
+            dimension,
+            metricFetchLimit,
+            filters,
+            signal,
+            excludedReferrers,
+          ),
+          fetchMetricRows(
+            client,
+            website.id,
+            comparison,
+            maxRangeDays,
+            dimension,
+            metricFetchLimit,
+            filters,
+            signal,
+            excludedReferrers,
+          ),
+        ]);
+        const candidateScores = new Map<string, number>();
+        for (const { name, value } of [...currentCandidates.rows, ...comparisonCandidates.rows]) {
+          candidateScores.set(name, Math.max(candidateScores.get(name) ?? 0, value));
+        }
+        const allCandidates = [...candidateScores]
+          .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+          .map(([name]) => name);
+        const candidates = allCandidates.slice(0, MAX_CHANNEL_COMPARISON_CANDIDATES);
+        let omittedUnsupportedRows = 0;
+        const values = await mapConcurrent(candidates, 4, async (name) => {
+          const candidateFilters = appendDimensionEquality(serializedFilters, dimension, name);
+          if (!candidateFilters) {
+            omittedUnsupportedRows += 1;
+            return undefined;
+          }
+          const expanded = (period: TimePeriod) =>
+            fetchExpandedMetricRows(client, {
+              filters: candidateFilters,
+              maxRangeDays,
+              period,
+              signal,
+              type: "channel",
+              websiteId: website.id,
+            });
+          const [currentRows, comparisonRows] = await Promise.all([
+            expanded(current),
+            expanded(comparison),
+          ]);
+          return {
+            name,
+            current: selectChannelTotals(currentRows, channel).visitors,
+            comparison: selectChannelTotals(comparisonRows, channel).visitors,
+          };
+        });
+        const difference = diffMetricRows(
+          {
+            rows: values.flatMap((value) =>
+              value ? [{ name: value.name, value: value.current }] : [],
+            ),
+            truncated: false,
+          },
+          {
+            rows: values.flatMap((value) =>
+              value ? [{ name: value.name, value: value.comparison }] : [],
+            ),
+            truncated: false,
+          },
+          limit,
+        );
+        return {
+          dimension,
+          status: "available" as const,
+          measure: "visitors" as const,
+          rows: difference.rows,
+          dataQuality: {
+            ...difference.dataQuality,
+            candidateRowsTruncated:
+              allCandidates.length > candidates.length ||
+              currentCandidates.truncated ||
+              comparisonCandidates.truncated,
+            candidateRows: candidates.length,
+            omittedUnsupportedRows,
+            fanoutRequests: candidates.length * 2,
+          },
+        };
+      }
+
       const [currentRows, comparisonRows] = await Promise.all([
         fetchMetricRows(
           client,
@@ -325,6 +523,7 @@ export async function compareTraffic(client: UmamiClient, input: TrafficComparis
           metricFetchLimit,
           filters,
           signal,
+          excludedReferrers,
         ),
         fetchMetricRows(
           client,
@@ -335,6 +534,7 @@ export async function compareTraffic(client: UmamiClient, input: TrafficComparis
           metricFetchLimit,
           filters,
           signal,
+          excludedReferrers,
         ),
       ]);
       const difference = diffMetricRows(currentRows, comparisonRows, limit);
@@ -372,9 +572,10 @@ export async function compareTraffic(client: UmamiClient, input: TrafficComparis
   const pageviewPercent = percentChange(currentTotals.pageviews, comparisonTotals.pageviews);
   const direction = pageviewDelta > 0 ? "increase" : pageviewDelta < 0 ? "decrease" : "flat";
   const leading = leadingObservedChanges[0];
+  const subject = channel ? `${channel} channel traffic` : "Traffic";
   const explanation = leading
-    ? `Traffic shows a ${direction}${pageviewPercent === null ? "" : ` of ${Math.abs(pageviewPercent)}%`}. The largest observed breakdown change is ${leading.dimension}=${leading.name} (${leading.delta > 0 ? "+" : ""}${leading.delta} visitors); this is evidence of association, not proof of causation.`
-    : `Traffic shows a ${direction}${pageviewPercent === null ? "" : ` of ${Math.abs(pageviewPercent)}%`}. No authorized breakdown produced enough evidence to identify a leading observed change.`;
+    ? `${subject} shows a ${direction}${pageviewPercent === null ? "" : ` of ${Math.abs(pageviewPercent)}%`}. The largest observed breakdown change is ${leading.dimension}=${leading.name} (${leading.delta > 0 ? "+" : ""}${leading.delta} visitors); this is evidence of association, not proof of causation.`
+    : `${subject} shows a ${direction}${pageviewPercent === null ? "" : ` of ${Math.abs(pageviewPercent)}%`}. No authorized breakdown produced enough evidence to identify a leading observed change.`;
 
   return {
     dataStatus:
@@ -387,6 +588,7 @@ export async function compareTraffic(client: UmamiClient, input: TrafficComparis
         ? ("empty" as const)
         : ("available" as const),
     website,
+    ...(channel ? { channel } : {}),
     currentPeriod: isoPeriod(current),
     comparisonPeriod: isoPeriod(comparison),
     current: currentTotals,
@@ -408,7 +610,10 @@ export async function compareTraffic(client: UmamiClient, input: TrafficComparis
         .filter(
           (item) =>
             item.status === "available" &&
-            (item.dataQuality.currentRowsTruncated || item.dataQuality.comparisonRowsTruncated),
+            (item.dataQuality.currentRowsTruncated ||
+              item.dataQuality.comparisonRowsTruncated ||
+              ("candidateRowsTruncated" in item.dataQuality &&
+                item.dataQuality.candidateRowsTruncated === true)),
         )
         .map(({ dimension }) => dimension),
       omittedUncertainRows: breakdowns

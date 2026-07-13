@@ -2,6 +2,7 @@ import { UmamiError } from "../api/errors.js";
 import type { PagedResponse } from "../api/types.js";
 import type { TimeInput } from "../time.js";
 import { parseTimeRange } from "../time.js";
+import { serializeFilters } from "./schemas.js";
 
 export function reportDateRange(
   start: TimeInput,
@@ -18,7 +19,7 @@ export function reportDateRange(
 export function reportFilters(
   filters: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
-  const { excludeBounce, ...rest } = filters ?? {};
+  const { excludeBounce, ...rest } = serializeFilters(filters);
   return {
     ...rest,
     ...(excludeBounce === true ? { excludeBounce: "true" } : {}),

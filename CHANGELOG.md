@@ -4,6 +4,27 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-13
+
+### Added
+
+- Add structured `equals`, `not_equals`, `contains`, `not_contains`, regex, and empty-value filter operators, including array-backed `IN` and `NOT IN` values.
+- Add direct-traffic isolation for both `referrer: ""` and `referrer: { operator: "is_empty" }` without triggering Umami's external-referrer-only behavior.
+- Add channel filters to traffic-change and release-impact analysis, plus bounded derived `channel × dimension` support in `run_breakdown_report` with explicit fan-out and truncation metadata.
+- Add conservative referral-spam detection, evidence and thresholds, the opt-in `trafficSegment: "human"` preset, and a `referral_spam` tracking-health check.
+- Add `compare_traffic_series` for aligned daily or finer-grained current/baseline buckets and `get_server_info` for local version, limits, toolsets, and feature discovery.
+
+### Changed
+
+- Include channel evidence in the default traffic-change and release-impact dimensions.
+- Expand the default read-only profile from 12 to 14 tools and the full surface from 35 to 37 tools.
+- Connect traffic explanations to referral-spam evidence instead of returning only a generic association caveat.
+
+### Security
+
+- Keep human-traffic cleanup read-only and fail closed when referral-spam assessment is unavailable for either comparison period.
+- Bound derived channel cross-tabs to 50 candidate rows with four concurrent workers and expose incomplete candidate coverage instead of implying exhaustive results.
+
 ## [0.2.0] - 2026-07-13
 
 ### Added
