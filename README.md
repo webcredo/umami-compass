@@ -12,9 +12,9 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.1.1` is the current patch release. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.1.2` is the current patch release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
-> The `npx` examples require `umami-compass` v0.1.0 or newer. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
+> The `npx` examples follow the stable npm release channel and check it whenever the MCP process starts. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 
 ## Why this project
 
@@ -33,6 +33,16 @@ See the dated [landscape review](docs/research/umami-mcp-landscape-2026-07.md) f
 
 Requirements: Node.js 22 or newer and an Umami identity with view-only access where possible.
 
+The examples use the auto-updating stable launcher:
+
+```sh
+npx --yes --prefer-online umami-compass@latest
+```
+
+`@latest` selects the stable npm channel and `--prefer-online` makes npm check the registry even when package metadata is cached. npm still reuses the cached package when that exact release is already present. Updates take effect the next time the MCP process starts; an already running local server cannot replace itself.
+
+Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.1.2`. Never use the preview channel for an unattended production setup.
+
 ### Umami Cloud
 
 ```json
@@ -40,7 +50,7 @@ Requirements: Node.js 22 or newer and an Umami identity with view-only access wh
   "mcpServers": {
     "umami": {
       "command": "npx",
-      "args": ["-y", "umami-compass"],
+      "args": ["--yes", "--prefer-online", "umami-compass@latest"],
       "env": {
         "UMAMI_API_KEY": "replace-with-your-api-key"
       }
@@ -58,7 +68,7 @@ With `UMAMI_API_KEY` and no URL, the API root defaults to `https://api.umami.is/
   "mcpServers": {
     "umami": {
       "command": "npx",
-      "args": ["-y", "umami-compass"],
+      "args": ["--yes", "--prefer-online", "umami-compass@latest"],
       "env": {
         "UMAMI_URL": "https://analytics.example.com",
         "UMAMI_USERNAME": "mcp-viewer",
@@ -138,11 +148,11 @@ Codex clients and ChatGPT desktop on the same host share `~/.codex/config.toml`.
 ```toml
 [mcp_servers.umami-compass]
 command = "npx"
-args = ["-y", "umami-compass"]
+args = ["--yes", "--prefer-online", "umami-compass@latest"]
 env_vars = ["UMAMI_API_KEY"]
 ```
 
-Run `codex mcp list` or `/mcp` to verify it. In the Codex IDE extension or ChatGPT desktop, you can also open **MCP servers**, add a **STDIO** server with command `npx -y umami-compass`, then restart the client. See the official [Codex and ChatGPT MCP guide](https://developers.openai.com/codex/mcp/).
+Run `codex mcp list` or `/mcp` to verify it. In the Codex IDE extension or ChatGPT desktop, you can also open **MCP servers**, add a **STDIO** server with command `npx --yes --prefer-online umami-compass@latest`, then restart the client. See the official [Codex and ChatGPT MCP guide](https://developers.openai.com/codex/mcp/).
 
 ChatGPT web does not read local Codex config. The current package is local stdio; a hosted plugin requires the future authenticated remote transport.
 
@@ -153,7 +163,7 @@ Use user scope to keep the personal server outside the repository:
 ```sh
 claude mcp add --scope user --transport stdio \
   --env UMAMI_API_KEY="$UMAMI_API_KEY" \
-  umami-compass -- npx -y umami-compass
+  umami-compass -- npx --yes --prefer-online umami-compass@latest
 ```
 
 Verify with `claude mcp list` or `/mcp`. For a team-safe `.mcp.json`, Claude Code supports `${UMAMI_API_KEY}` expansion; never commit the actual value. See the official [Claude Code MCP guide](https://code.claude.com/docs/en/mcp).
@@ -167,7 +177,7 @@ Open **Settings → Developer → Edit Config**. On macOS the file is `~/Library
   "mcpServers": {
     "umami-compass": {
       "command": "npx",
-      "args": ["-y", "umami-compass"],
+      "args": ["--yes", "--prefer-online", "umami-compass@latest"],
       "env": {
         "UMAMI_API_KEY": "replace-with-your-api-key"
       }
@@ -187,7 +197,7 @@ Put this in the private global `~/.cursor/mcp.json`, or in `.cursor/mcp.json` on
   "mcpServers": {
     "umami-compass": {
       "command": "npx",
-      "args": ["-y", "umami-compass"],
+      "args": ["--yes", "--prefer-online", "umami-compass@latest"],
       "env": {
         "UMAMI_API_KEY": "replace-with-your-api-key"
       }
@@ -216,7 +226,7 @@ Use **MCP: Open User Configuration** for a personal config, or `.vscode/mcp.json
     "umami-compass": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "umami-compass"],
+      "args": ["--yes", "--prefer-online", "umami-compass@latest"],
       "env": {
         "UMAMI_API_KEY": "${input:umami-api-key}"
       }
@@ -236,7 +246,7 @@ Add this to the user-level `~/.gemini/settings.json` (or project `.gemini/settin
   "mcpServers": {
     "umami-compass": {
       "command": "npx",
-      "args": ["-y", "umami-compass"],
+      "args": ["--yes", "--prefer-online", "umami-compass@latest"],
       "env": {
         "UMAMI_API_KEY": "$UMAMI_API_KEY"
       },
@@ -250,8 +260,8 @@ Verify with `gemini mcp list` or `/mcp`. See the official [Gemini CLI MCP guide]
 
 ### Troubleshooting
 
-- Run `npx -y umami-compass --version` first; Node.js 22+ is required.
-- A client showing zero tools usually needs a full restart after its configuration changed.
+- Run `npx --yes --prefer-online umami-compass@latest --version` first; Node.js 22+ is required.
+- After a package update, restart the MCP server so the client requests the new tool list. A client still showing an old or empty list may also need its cached tools cleared.
 - `401` means the credential or auth mode is wrong; `403` can mean the Umami account lacks permission for that website section.
 - For self-hosted local development, `http://localhost:3000` is allowed. Other plain HTTP origins require the explicit unsafe opt-in.
 - Start with the default toolsets. Enable `performance`, `reports`, `revenue`, `replay`, or `heatmaps` only as needed.
