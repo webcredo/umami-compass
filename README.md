@@ -8,6 +8,8 @@
 [![npm version](https://img.shields.io/npm/v/umami-compass?logo=npm&color=CB3837)](https://www.npmjs.com/package/umami-compass)
 [![license](https://img.shields.io/github/license/webcredo/umami-compass)](LICENSE)
 
+**Distribution:** [`umami-compass` on npm](https://www.npmjs.com/package/umami-compass) · [`io.github.webcredo/umami-compass` in the official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.webcredo%2Fumami-compass)
+
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
 Version `0.1.0` is the initial open-source release line. See [Compatibility](#compatibility) before using it with older Umami versions.
