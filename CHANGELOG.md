@@ -4,6 +4,17 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-13
+
+### Fixed
+
+- Discover websites through each visible team so member and view-only accounts no longer receive an empty `list_websites` result.
+- Deduplicate direct and team discovery results before applying the requested page and optional website allowlist.
+
+### Security
+
+- Bound team traversal and upstream website pages, failing explicitly instead of returning a silently partial discovery result.
+
 ## [0.1.2] - 2026-07-13
 
 ### Changed
