@@ -8,6 +8,7 @@ import {
   pageSchema,
   pageSizeSchema,
   rangeQuery,
+  resultMetaOutputSchema,
   timeSchema,
   uuidSchema,
 } from "../schemas.js";
@@ -15,6 +16,7 @@ import type { ToolModule } from "../tool-module.js";
 
 const replayOutputSchema = {
   data: pagedOutputSchema.data.extend(recorderDataStatusShape).passthrough(),
+  ...resultMetaOutputSchema,
 };
 
 export const replayModule: ToolModule = {
@@ -47,31 +49,34 @@ export const replayModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, page, pageSize, search, minDuration, filters }, extra) =>
-        runTool(async () => {
-          client.assertWebsiteAllowed(websiteId);
-          const result = requirePagedResponse(
-            await client.get(
-              `websites/${encodeURIComponent(websiteId)}/replays`,
-              {
-                ...rangeQuery(start, end, config.maxRangeDays, { filters }),
-                page,
-                pageSize,
-                search,
-                minDuration,
-              },
+        runTool(
+          async () => {
+            client.assertWebsiteAllowed(websiteId);
+            const result = requirePagedResponse(
+              await client.get(
+                `websites/${encodeURIComponent(websiteId)}/replays`,
+                {
+                  ...rangeQuery(start, end, config.maxRangeDays, { filters }),
+                  page,
+                  pageSize,
+                  search,
+                  minDuration,
+                },
+                extra.signal,
+              ),
+            );
+            const status = await describeRecorderDataStatus(
+              client,
+              websiteId,
+              "replay",
+              result.data.length > 0,
+              "no_data_in_range",
               extra.signal,
-            ),
-          );
-          const status = await describeRecorderDataStatus(
-            client,
-            websiteId,
-            "replay",
-            result.data.length > 0,
-            "no_data_in_range",
-            extra.signal,
-          );
-          return { ...result, ...status };
-        }),
+            );
+            return { ...result, ...status };
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
   },
 };

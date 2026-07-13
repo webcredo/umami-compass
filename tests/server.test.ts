@@ -58,7 +58,7 @@ describe("Umami Compass MCP server", () => {
     const client = await connect(vi.fn<Fetch>(), "all");
     const result = await client.listTools();
 
-    expect(result.tools).toHaveLength(30);
+    expect(result.tools).toHaveLength(35);
     expect(result.tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
     expect(
       result.tools.some((tool) => /^(create|update|delete|reset|share|save|send)_/.test(tool.name)),
@@ -69,6 +69,60 @@ describe("Umami Compass MCP server", () => {
       expect(properties).not.toHaveProperty("apiUrl");
       expect(properties).not.toHaveProperty("host");
     }
+  });
+
+  it("exposes sanitized capabilities and guided insight prompts", async () => {
+    const client = await connect(vi.fn<Fetch>(), "core,insights");
+    const [resources, prompts, capabilities] = await Promise.all([
+      client.listResources(),
+      client.listPrompts(),
+      client.readResource({ uri: "umami://capabilities" }),
+    ]);
+
+    expect(resources.resources.map(({ uri }) => uri)).toEqual([
+      "umami://websites",
+      "umami://capabilities",
+    ]);
+    expect(prompts.prompts.map(({ name }) => name)).toEqual([
+      "analytics_report",
+      "weekly_portfolio_briefing",
+      "investigate_traffic_change",
+      "release_impact_report",
+      "tracking_health_audit",
+    ]);
+    const content = capabilities.contents[0];
+    expect(content?.mimeType).toBe("application/json");
+    const capabilityText = content && "text" in content ? content.text : "{}";
+    const capabilityData = JSON.parse(capabilityText) as {
+      enabledToolsets?: string[];
+      version?: string;
+    };
+    expect(capabilityData.version).toBe("0.2.0");
+    expect(capabilityData.enabledToolsets).toEqual(["core", "insights"]);
+    expect(JSON.stringify(capabilities.contents)).not.toContain("test-key");
+  });
+
+  it("publishes only prompts whose required toolsets are enabled", async () => {
+    const [coreClient, insightsClient, reportsClient] = await Promise.all([
+      connect(vi.fn<Fetch>(), "core"),
+      connect(vi.fn<Fetch>(), "insights"),
+      connect(vi.fn<Fetch>(), "reports"),
+    ]);
+
+    const [corePrompts, insightPrompts, reportPrompts] = await Promise.all([
+      coreClient.listPrompts(),
+      insightsClient.listPrompts(),
+      reportsClient.listPrompts(),
+    ]);
+
+    expect(corePrompts.prompts.map(({ name }) => name)).toEqual(["analytics_report"]);
+    expect(insightPrompts.prompts.map(({ name }) => name)).toEqual([
+      "weekly_portfolio_briefing",
+      "investigate_traffic_change",
+      "release_impact_report",
+      "tracking_health_audit",
+    ]);
+    expect(reportPrompts.prompts.map(({ name }) => name)).toEqual(["conversion_audit"]);
   });
 
   it("returns structured content and both Umami 3.2 time series", async () => {
@@ -90,7 +144,7 @@ describe("Umami Compass MCP server", () => {
     });
 
     expect(result.isError).not.toBe(true);
-    expect(result.structuredContent).toEqual({
+    expect(result.structuredContent).toMatchObject({
       data: {
         pageviews: [{ x: "2026-07-01", y: 18 }],
         sessions: [{ x: "2026-07-01", y: 11 }],
@@ -300,6 +354,41 @@ describe("Umami Compass MCP server", () => {
     });
   });
 
+  it("marks a zero-revenue range as explicitly empty", async () => {
+    const client = await connect(
+      vi.fn<Fetch>().mockResolvedValue(
+        Response.json({
+          sum: 0,
+          count: 0,
+          average: 0,
+          unique_count: 0,
+          arpu: 0,
+          comparison: { sum: 10, count: 1, average: 10, unique_count: 1, arpu: 10 },
+        }),
+      ),
+      "revenue",
+    );
+
+    const result = await client.callTool({
+      name: "get_revenue_stats",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        currency: "USD",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: { sum: 0, count: 0 },
+      meta: {
+        dataStatus: "empty",
+        emptyReason: "no_data_in_range",
+        websiteId: WEBSITE_ID,
+      },
+    });
+  });
+
   it("returns bounded Core Web Vitals from the typed performance report", async () => {
     const chart = Array.from({ length: 3 }, (_, index) => ({
       t: `2026-07-0${index + 1}`,
@@ -413,7 +502,7 @@ describe("Umami Compass MCP server", () => {
     });
 
     expect(result.isError).not.toBe(true);
-    expect(result.structuredContent).toEqual({
+    expect(result.structuredContent).toMatchObject({
       data: {
         type,
         items: segments,
@@ -447,7 +536,7 @@ describe("Umami Compass MCP server", () => {
       },
     });
 
-    expect(result.structuredContent).toEqual({ data: funnel });
+    expect(result.structuredContent).toMatchObject({ data: funnel });
     const [input, init] = fetchMock.mock.calls[0] ?? [];
     expect(new URL(String(input)).pathname).toBe("/v1/reports/funnel");
     expect(JSON.parse(String(init?.body))).toMatchObject({
@@ -559,7 +648,7 @@ describe("Umami Compass MCP server", () => {
       },
     });
 
-    expect(result.structuredContent).toEqual({
+    expect(result.structuredContent).toMatchObject({
       data: {
         items: activity.slice(0, 2),
         itemLimit: 2,
@@ -592,7 +681,7 @@ describe("Umami Compass MCP server", () => {
       arguments: { websiteId: WEBSITE_ID, sessionId },
     });
 
-    expect(result.structuredContent).toEqual({
+    expect(result.structuredContent).toMatchObject({
       data: {
         id: sessionId,
         distinctId: "00042",

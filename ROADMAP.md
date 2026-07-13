@@ -8,7 +8,14 @@ The roadmap describes direction, not a compatibility promise. Proposals should b
 - Publish a signed/provenance-backed npm package and MCP Registry entry.
 - Document client setup and least-privilege deployment.
 
-## 0.2 — deeper analysis
+## 0.2 — insight workflows
+
+- Portfolio overview with comparison leaders, stale tracking, bounded anomalies, and isolated per-site failures.
+- Evidence-based traffic-change and release-impact analysis with explicit correlation caveats.
+- Tracking health checks across traffic freshness, domains, events, recorder configuration, and permissions.
+- Website resolution, common result metadata, team allowlists, capability discovery, and guided prompts.
+
+## 0.3 — deeper analysis
 
 - Event and session property reports with bounded cardinality.
 - Revenue chart/session reports.
@@ -16,7 +23,7 @@ The roadmap describes direction, not a compatibility promise. Proposals should b
 - Saved replay metadata where public API stability permits.
 - Capability discovery for differences between Cloud and self-hosted releases.
 
-## 0.3 — remote deployment profile
+## 0.4 — remote deployment profile
 
 - Streamable HTTP only with MCP-compliant OAuth 2.1 resource-server behavior.
 - Tenant isolation, rate limits, audit logs, deployment health checks, and observability without secrets.

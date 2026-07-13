@@ -51,7 +51,11 @@ try {
     await client.connect(transport);
     const { tools } = await client.listTools();
     const names = tools.map(({ name }) => name);
-    if (tools.length !== 7 || !names.includes("get_pageviews")) {
+    if (
+      tools.length !== 12 ||
+      !names.includes("get_pageviews") ||
+      !names.includes("get_portfolio_overview")
+    ) {
       throw new Error(`unexpected packaged MCP tool surface: ${names.join(", ")}`);
     }
   } finally {

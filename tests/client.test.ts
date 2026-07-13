@@ -297,6 +297,124 @@ describe("UmamiClient", () => {
     });
   });
 
+  it("uses UMAMI_TEAM_IDS as an authorization boundary for known website UUIDs", async () => {
+    const outsideWebsiteId = "8e06460b-d3c1-4192-b721-c643f3600408";
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/teams/${TEAM_ID}/websites`)) {
+        return json({
+          data: [{ id: WEBSITE_ID, name: "Allowed", teamId: TEAM_ID }],
+          count: 1,
+          page: 1,
+          pageSize: 100,
+        });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = new UmamiClient(
+      loadConfig({ UMAMI_API_KEY: "cloud-key", UMAMI_TEAM_IDS: TEAM_ID }),
+      fetchMock,
+    );
+
+    await expect(
+      client.get(`websites/${outsideWebsiteId}/stats`, { startAt: 1, endAt: 2 }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("UMAMI_TEAM_IDS"),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.some(([input]) => requestUrl(input).pathname.endsWith("/teams")),
+    ).toBe(false);
+    expect(
+      fetchMock.mock.calls.some(([input]) => requestUrl(input).pathname.includes(outsideWebsiteId)),
+    ).toBe(false);
+  });
+
+  it("enforces the team boundary before typed reports and saved-report routes", async () => {
+    const outsideWebsiteId = "8e06460b-d3c1-4192-b721-c643f3600408";
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/teams/${TEAM_ID}/websites`)) {
+        return json({
+          data: [{ id: WEBSITE_ID, name: "Allowed", teamId: TEAM_ID }],
+          count: 1,
+          page: 1,
+          pageSize: 100,
+        });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = new UmamiClient(
+      loadConfig({ UMAMI_API_KEY: "cloud-key", UMAMI_TEAM_IDS: TEAM_ID }),
+      fetchMock,
+    );
+
+    await expect(
+      client.runReport({
+        websiteId: outsideWebsiteId,
+        type: "performance",
+        parameters: {
+          startDate: "2026-07-01T00:00:00.000Z",
+          endDate: "2026-07-02T00:00:00.000Z",
+          metric: "lcp",
+          timezone: "UTC",
+          unit: "day",
+        },
+        filters: {},
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(client.get(`websites/${outsideWebsiteId}/reports`)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.some(([input]) => requestUrl(input).pathname.includes(outsideWebsiteId)),
+    ).toBe(false);
+    expect(
+      fetchMock.mock.calls.some(([input]) => requestUrl(input).pathname.includes("/reports/")),
+    ).toBe(false);
+  });
+
+  it("intersects team and website allowlists and excludes user-owned websites", async () => {
+    const secondWebsiteId = "7af8e5ad-83f1-4f50-8db6-26d95b32ec19";
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/teams/${TEAM_ID}/websites`)) {
+        return json({
+          data: [
+            { id: WEBSITE_ID, name: "Allowed by both", teamId: TEAM_ID },
+            { id: secondWebsiteId, name: "Not in website allowlist", teamId: TEAM_ID },
+          ],
+          count: 2,
+          page: 1,
+          pageSize: 100,
+        });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = new UmamiClient(
+      loadConfig({
+        UMAMI_API_KEY: "cloud-key",
+        UMAMI_TEAM_IDS: TEAM_ID,
+        UMAMI_WEBSITE_IDS: WEBSITE_ID,
+      }),
+      fetchMock,
+    );
+
+    await expect(client.listWebsites({ page: 1, pageSize: 20 })).resolves.toEqual({
+      data: [{ id: WEBSITE_ID, name: "Allowed by both", teamId: TEAM_ID }],
+      count: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.some(([input]) => requestUrl(input).pathname === "/v1/websites"),
+    ).toBe(false);
+  });
+
   it("stops team discovery explicitly when the bounded team limit is exceeded", async () => {
     const fetchMock = vi.fn<Fetch>(async (input) => {
       const url = requestUrl(input);

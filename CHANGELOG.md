@@ -4,6 +4,29 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-13
+
+### Added
+
+- Add the aggregate `insights` toolset with `resolve_website`, `get_portfolio_overview`, `explain_traffic_change`, `analyze_release_impact`, and `tracking_health_check`.
+- Add five guided workflows for weekly briefings, traffic investigations, release impact, tracking health, and conversion audits.
+- Add the sanitized `umami://capabilities` resource for enabled toolsets, scope, authentication type, and safety limits.
+- Add `UMAMI_TEAM_IDS` as a bounded team allowlist that applies to discovery and direct website/report access.
+
+### Changed
+
+- Return a common `meta` envelope with data status, empty reason, website, requested range, timezone, and truncation state where applicable.
+- Enable the aggregate `core,insights` profile by default; row-level sessions, events, replay, and heatmaps remain opt-in.
+- Expand the full read-only surface from 30 to 35 tools.
+- Compare portfolio and tracking traffic against explicit equal-length baseline requests, omit uncertain top-N deltas, and require material Web Vital changes with sufficient samples before assigning a release-impact direction.
+- Register guided prompts only when their required toolsets are enabled.
+
+### Security
+
+- Enforce the team allowlist centrally before direct website routes and typed report execution, including requests that already know a website UUID.
+- Treat `UMAMI_TEAM_IDS` as a strict boundary: user-owned websites without an allowed team are excluded, and simultaneous team and website allowlists are intersected.
+- Bound multi-website insight workflows to 50 websites and four concurrent website workers, while isolating safe per-site failures.
+
 ## [0.1.3] - 2026-07-13
 
 ### Fixed

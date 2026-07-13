@@ -36,19 +36,22 @@ export const sessionsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, page, pageSize, search, filters }, extra) =>
-        runTool(() => {
-          client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/sessions`,
-            {
-              ...rangeQuery(start, end, config.maxRangeDays, { filters }),
-              page,
-              pageSize,
-              search,
-            },
-            extra.signal,
-          );
-        }),
+        runTool(
+          () => {
+            client.assertWebsiteAllowed(websiteId);
+            return client.get(
+              `websites/${encodeURIComponent(websiteId)}/sessions`,
+              {
+                ...rangeQuery(start, end, config.maxRangeDays, { filters }),
+                page,
+                pageSize,
+                search,
+              },
+              extra.signal,
+            );
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -66,14 +69,17 @@ export const sessionsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, filters }, extra) =>
-        runTool(() => {
-          client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/sessions/stats`,
-            rangeQuery(start, end, config.maxRangeDays, { filters }),
-            extra.signal,
-          );
-        }),
+        runTool(
+          () => {
+            client.assertWebsiteAllowed(websiteId);
+            return client.get(
+              `websites/${encodeURIComponent(websiteId)}/sessions/stats`,
+              rangeQuery(start, end, config.maxRangeDays, { filters }),
+              extra.signal,
+            );
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -86,14 +92,17 @@ export const sessionsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, sessionId }, extra) =>
-        runTool(() => {
-          client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/sessions/${encodeURIComponent(sessionId)}`,
-            undefined,
-            extra.signal,
-          );
-        }),
+        runTool(
+          () => {
+            client.assertWebsiteAllowed(websiteId);
+            return client.get(
+              `websites/${encodeURIComponent(websiteId)}/sessions/${encodeURIComponent(sessionId)}`,
+              undefined,
+              extra.signal,
+            );
+          },
+          { websiteId },
+        ),
     );
 
     server.registerTool(
@@ -113,17 +122,20 @@ export const sessionsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, sessionId, start, end, maxItems }, extra) =>
-        runTool(async () => {
-          client.assertWebsiteAllowed(websiteId);
-          return boundedItems(
-            await client.get(
-              `websites/${encodeURIComponent(websiteId)}/sessions/${encodeURIComponent(sessionId)}/activity`,
-              rangeQuery(start, end, config.maxRangeDays),
-              extra.signal,
-            ),
-            maxItems,
-          );
-        }),
+        runTool(
+          async () => {
+            client.assertWebsiteAllowed(websiteId);
+            return boundedItems(
+              await client.get(
+                `websites/${encodeURIComponent(websiteId)}/sessions/${encodeURIComponent(sessionId)}/activity`,
+                rangeQuery(start, end, config.maxRangeDays),
+                extra.signal,
+              ),
+              maxItems,
+            );
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
   },
 };

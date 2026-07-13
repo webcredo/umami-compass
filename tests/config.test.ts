@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 
 const WEBSITE_ID = "6b2c8c10-908c-4a8e-a924-4049eb3bde8c";
+const TEAM_ID = "4c253b22-6cca-42a3-a18f-81415db959d3";
 
 describe("loadConfig", () => {
   it("defaults API-key auth to Umami Cloud and safe toolsets", () => {
@@ -9,7 +10,7 @@ describe("loadConfig", () => {
 
     expect(config.apiUrl.href).toBe("https://api.umami.is/v1/");
     expect(config.auth).toEqual({ type: "apiKey", apiKey: "cloud-secret" });
-    expect([...config.toolsets]).toEqual(["core"]);
+    expect([...config.toolsets]).toEqual(["core", "insights"]);
     expect(config.maxResponseBytes).toBe(10_485_760);
   });
 
@@ -35,6 +36,7 @@ describe("loadConfig", () => {
     expect(config.apiUrl.href).toBe("https://analytics.example.com/custom/api/");
     expect([...config.toolsets]).toEqual([
       "core",
+      "insights",
       "events",
       "sessions",
       "performance",
@@ -92,7 +94,7 @@ describe("loadConfig", () => {
         UMAMI_API_KEY: "key",
         UMAMI_WEBSITE_IDS: Array.from({ length: 101 }, () => WEBSITE_ID).join(","),
       }),
-    ).toThrow("cannot contain more than 100 websites");
+    ).toThrow("UMAMI_WEBSITE_IDS cannot contain more than 100 IDs");
   });
 
   it("normalizes website allowlist UUIDs to lowercase", () => {
@@ -102,6 +104,15 @@ describe("loadConfig", () => {
     });
 
     expect(config.websiteIds).toEqual(new Set([WEBSITE_ID]));
+  });
+
+  it("supports a bounded, normalized team allowlist", () => {
+    const config = loadConfig({
+      UMAMI_API_KEY: "key",
+      UMAMI_TEAM_IDS: TEAM_ID.toUpperCase(),
+    });
+
+    expect(config.teamIds).toEqual(new Set([TEAM_ID]));
   });
 
   it("validates the upstream response byte budget", () => {
