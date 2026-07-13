@@ -10,13 +10,15 @@ const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temporaryRoot = await mkdtemp(join(tmpdir(), "umami-compass-package-"));
 
 try {
-  const packed = JSON.parse(
+  const packResult = JSON.parse(
     execFileSync(
       "npm",
       ["pack", "--ignore-scripts", "--json", "--pack-destination", temporaryRoot],
       { cwd: projectRoot, encoding: "utf8" },
     ),
   );
+  // npm 10/11 return an array; npm 12 returns an object keyed by package name.
+  const packed = Array.isArray(packResult) ? packResult : Object.values(packResult);
   const filename = packed[0]?.filename;
   if (typeof filename !== "string") throw new Error("npm pack did not return a tarball name");
 
