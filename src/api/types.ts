@@ -22,6 +22,12 @@ export interface Website {
   [key: string]: unknown;
 }
 
+export interface Team {
+  id: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
 export interface LoginResponse {
   token: string;
   [key: string]: unknown;

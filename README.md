@@ -12,7 +12,7 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.1.2` is the current patch release. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.1.3` is the current patch release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
 > The `npx` examples follow the stable npm release channel and check it whenever the MCP process starts. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 
@@ -41,7 +41,7 @@ npx --yes --prefer-online umami-compass@latest
 
 `@latest` selects the stable npm channel and `--prefer-online` makes npm check the registry even when package metadata is cached. npm still reuses the cached package when that exact release is already present. Updates take effect the next time the MCP process starts; an already running local server cannot replace itself.
 
-Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.1.2`. Never use the preview channel for an unattended production setup.
+Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.1.3`. Never use the preview channel for an unattended production setup.
 
 ### Umami Cloud
 
@@ -82,7 +82,7 @@ With `UMAMI_API_KEY` and no URL, the API root defaults to `https://api.umami.is/
 
 `UMAMI_URL` is an instance origin; `/api` is appended. Use `UMAMI_API_URL` instead when a reverse proxy exposes a custom, exact API root.
 
-`UMAMI_WEBSITE_IDS` is an optional safety allowlist, not a credential. Replace the example UUID with a website ID from Umami (or from `list_websites`), separate multiple IDs with commas, or remove the variable to use every website visible to the account.
+`UMAMI_WEBSITE_IDS` is an optional safety allowlist, not a credential. Replace the example UUID with a website ID from Umami (or from `list_websites`), separate multiple IDs with commas, or remove the variable to discover every website visible directly or through a team membership.
 
 Do not commit real credentials. Prefer a dedicated view-only Umami account and the client/OS secret store when available.
 
@@ -119,7 +119,7 @@ Authentication variables have no default. Configure only one of the three modes 
 
 - `UMAMI_URL` — self-hosted instance origin; `/api` is appended. With API-key auth and no URL, the default is the Umami Cloud API root.
 - `UMAMI_API_URL` — exact API root; takes the place of `UMAMI_URL`. No default.
-- `UMAMI_WEBSITE_IDS` — comma-separated website UUID allowlist. Defaults to every site visible to the account.
+- `UMAMI_WEBSITE_IDS` — comma-separated website UUID allowlist. Defaults to every site visible directly or through a team membership.
 - `UMAMI_TOOLSETS` — comma-separated toolsets or `all`. Available values are `core`, `events`, `sessions`, `performance`, `reports`, `revenue`, `replay`, and `heatmaps`. Defaults to `core`.
 
 ### Safety limits

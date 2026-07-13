@@ -52,7 +52,7 @@ export const coreModule: ToolModule = {
       {
         title: "List Umami websites",
         description:
-          "List websites visible to the configured Umami identity. If UMAMI_WEBSITE_IDS is set, returns only that exact allowlist.",
+          "List websites visible directly or through any team membership of the configured Umami identity. If UMAMI_WEBSITE_IDS is set, returns only that exact allowlist.",
         inputSchema: {
           page: pageSchema,
           pageSize: pageSizeSchema,

@@ -7,6 +7,7 @@ import type {
   PagedResponse,
   Query,
   ReadOnlyReportRequest,
+  Team,
   Website,
 } from "./types.js";
 
@@ -28,6 +29,14 @@ interface RequestHeaders {
   headers: Headers;
   loginGeneration?: number;
 }
+
+interface DiscoveryBudget {
+  websitePages: number;
+}
+
+const DISCOVERY_PAGE_SIZE = 100;
+const MAX_DISCOVERY_TEAMS = 25;
+const MAX_DISCOVERY_WEBSITE_PAGES = 50;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -53,17 +62,41 @@ function resolveApiPath(baseUrl: URL, path: string): URL {
   return url;
 }
 
-function requireWebsitePage(value: unknown): PagedResponse<Website> {
+function requirePage<T>(
+  value: unknown,
+  label: string,
+  isItem: (item: unknown) => item is T,
+): PagedResponse<T> {
   if (
     !isRecord(value) ||
     !Array.isArray(value.data) ||
+    !value.data.every(isItem) ||
     typeof value.count !== "number" ||
     typeof value.page !== "number" ||
-    typeof value.pageSize !== "number"
+    typeof value.pageSize !== "number" ||
+    value.count < 0 ||
+    value.page < 1 ||
+    value.pageSize < 1
   ) {
-    throw new UmamiError("INVALID_RESPONSE", "Umami returned an invalid website list.");
+    throw new UmamiError("INVALID_RESPONSE", `Umami returned an invalid ${label} list.`);
   }
-  return value as unknown as PagedResponse<Website>;
+  return value as unknown as PagedResponse<T>;
+}
+
+function requireWebsitePage(value: unknown): PagedResponse<Website> {
+  return requirePage(
+    value,
+    "website",
+    (item): item is Website => isRecord(item) && typeof item.id === "string",
+  );
+}
+
+function requireTeamPage(value: unknown): PagedResponse<Team> {
+  return requirePage(
+    value,
+    "team",
+    (item): item is Team => isRecord(item) && typeof item.id === "string",
+  );
 }
 
 function requireWebsite(value: unknown): Website {
@@ -197,35 +230,47 @@ export class UmamiClient {
     query: Query,
     signal?: AbortSignal,
   ): Promise<PagedResponse<Website> | unknown> {
-    const visibleQuery = { ...query, includeTeams: true };
-    if (!this.#config.websiteIds) {
-      return requireWebsitePage(await this.get<unknown>("websites", visibleQuery, signal));
-    }
-
     const requestedPage = typeof query.page === "number" ? query.page : 1;
     const requestedPageSize = typeof query.pageSize === "number" ? query.pageSize : 20;
-    const upstreamQuery = { ...visibleQuery, page: 1, pageSize: 100 };
-    const firstPage = requireWebsitePage(
-      await this.get<unknown>("websites", upstreamQuery, signal),
+    const search = typeof query.search === "string" ? query.search : undefined;
+    const budget: DiscoveryBudget = { websitePages: 0 };
+    const websites = await this.#listAllWebsitePages(
+      "websites",
+      { includeTeams: true, page: 1, pageSize: DISCOVERY_PAGE_SIZE, search },
+      budget,
+      signal,
     );
-    const pageCount = Math.ceil(firstPage.count / 100);
-    if (pageCount > 25) {
+    const teamPage = requireTeamPage(
+      await this.get<unknown>("teams", { page: 1, pageSize: DISCOVERY_PAGE_SIZE }, signal),
+    );
+    if (teamPage.count > MAX_DISCOVERY_TEAMS) {
       throw new UmamiError(
         "VALIDATION_ERROR",
-        "The account has too many websites to apply the local allowlist safely. Use a more limited Umami identity or a search filter.",
+        `The account belongs to more than ${MAX_DISCOVERY_TEAMS} teams, so website discovery was stopped safely. Use UMAMI_WEBSITE_IDS or a more limited Umami identity.`,
+      );
+    }
+    if (teamPage.data.length < teamPage.count) {
+      throw new UmamiError("INVALID_RESPONSE", "Umami returned an incomplete team list.");
+    }
+    for (const team of teamPage.data) {
+      websites.push(
+        ...(await this.#listAllWebsitePages(
+          `teams/${encodeURIComponent(team.id)}/websites`,
+          { page: 1, pageSize: DISCOVERY_PAGE_SIZE, search },
+          budget,
+          signal,
+        )),
       );
     }
 
-    const websites = [...firstPage.data];
-    for (let page = 2; page <= pageCount; page += 1) {
-      const nextPage = requireWebsitePage(
-        await this.get<unknown>("websites", { ...upstreamQuery, page }, signal),
-      );
-      websites.push(...nextPage.data);
+    const unique = new Map<string, Website>();
+    for (const website of websites) {
+      const key = website.id.toLowerCase();
+      if (!unique.has(key)) unique.set(key, website);
     }
-    const visible = websites.filter(
+    const visible = [...unique.values()].filter(
       (website) =>
-        typeof website.id === "string" && this.#config.websiteIds?.has(website.id.toLowerCase()),
+        !this.#config.websiteIds || this.#config.websiteIds.has(website.id.toLowerCase()),
     );
     const start = (requestedPage - 1) * requestedPageSize;
     return {
@@ -234,6 +279,37 @@ export class UmamiClient {
       page: requestedPage,
       pageSize: requestedPageSize,
     } satisfies PagedResponse<Website>;
+  }
+
+  async #listAllWebsitePages(
+    path: string,
+    query: Query,
+    budget: DiscoveryBudget,
+    signal?: AbortSignal,
+  ): Promise<Website[]> {
+    this.#reserveDiscoveryPages(budget, 1);
+    const firstPage = requireWebsitePage(await this.get<unknown>(path, query, signal));
+    const pageCount = Math.max(1, Math.ceil(firstPage.count / firstPage.pageSize));
+    this.#reserveDiscoveryPages(budget, pageCount - 1);
+
+    const websites = [...firstPage.data];
+    for (let page = 2; page <= pageCount; page += 1) {
+      const nextPage = requireWebsitePage(
+        await this.get<unknown>(path, { ...query, page }, signal),
+      );
+      websites.push(...nextPage.data);
+    }
+    return websites;
+  }
+
+  #reserveDiscoveryPages(budget: DiscoveryBudget, pages: number): void {
+    if (budget.websitePages + pages > MAX_DISCOVERY_WEBSITE_PAGES) {
+      throw new UmamiError(
+        "VALIDATION_ERROR",
+        `Website discovery would require more than ${MAX_DISCOVERY_WEBSITE_PAGES} upstream pages. Use search, UMAMI_WEBSITE_IDS, or a more limited Umami identity.`,
+      );
+    }
+    budget.websitePages += pages;
   }
 
   async getWebsite(websiteId: string, signal?: AbortSignal): Promise<Website> {

@@ -4,6 +4,7 @@ import { UmamiClient } from "../src/api/client.js";
 import { loadConfig } from "../src/config.js";
 
 const WEBSITE_ID = "6b2c8c10-908c-4a8e-a924-4049eb3bde8c";
+const TEAM_ID = "4c253b22-6cca-42a3-a18f-81415db959d3";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -60,23 +61,42 @@ describe("UmamiClient", () => {
     expect(new Headers(init?.headers).get("x-umami-api-key")).toBeNull();
   });
 
-  it("includes team-owned websites in discovery", async () => {
-    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
-      json({
-        data: [{ id: WEBSITE_ID, name: "Team website", teamId: "team-id" }],
-        count: 1,
-        page: 1,
-        pageSize: 20,
-      }),
-    );
+  it("discovers websites for team members even when the account owns no websites", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/teams/${TEAM_ID}/websites`)) {
+        expect(url.searchParams.get("search")).toBe("adzz");
+        return json({
+          data: [{ id: WEBSITE_ID, name: "adzz", teamId: TEAM_ID }],
+          count: 1,
+          page: 1,
+          pageSize: 100,
+        });
+      }
+      if (url.pathname.endsWith("/teams")) {
+        expect(url.searchParams.has("search")).toBe(false);
+        return json({
+          data: [{ id: TEAM_ID, name: "adzz", role: "team-view-only" }],
+          count: 1,
+          page: 1,
+          pageSize: 100,
+        });
+      }
+      if (url.pathname.endsWith("/websites")) {
+        expect(url.searchParams.get("includeTeams")).toBe("true");
+        return json({ data: [], count: 0, page: 1, pageSize: 100 });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
     const client = new UmamiClient(loadConfig({ UMAMI_API_KEY: "cloud-key" }), fetchMock);
 
-    await expect(client.listWebsites({ page: 1, pageSize: 20 })).resolves.toMatchObject({
-      data: [{ id: WEBSITE_ID, name: "Team website" }],
+    await expect(client.listWebsites({ page: 1, pageSize: 20, search: "adzz" })).resolves.toEqual({
+      data: [{ id: WEBSITE_ID, name: "adzz", teamId: TEAM_ID }],
       count: 1,
+      page: 1,
+      pageSize: 20,
     });
-    const url = requestUrl(fetchMock.mock.calls[0]?.[0] as Parameters<Fetch>[0]);
-    expect(url.searchParams.get("includeTeams")).toBe("true");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("deduplicates concurrent login and caches the bearer token", async () => {
@@ -203,8 +223,12 @@ describe("UmamiClient", () => {
 
   it("intersects, searches, and paginates the website allowlist without per-site requests", async () => {
     const secondWebsiteId = "7af8e5ad-83f1-4f50-8db6-26d95b32ec19";
-    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
-      json({
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/teams")) {
+        return json({ data: [], count: 0, page: 1, pageSize: 100 });
+      }
+      return json({
         data: [
           { id: WEBSITE_ID, name: "Primary" },
           { id: "8e06460b-d3c1-4192-b721-c643f3600408", name: "Not allowed" },
@@ -213,8 +237,8 @@ describe("UmamiClient", () => {
         count: 3,
         page: 1,
         pageSize: 100,
-      }),
-    );
+      });
+    });
     const client = new UmamiClient(
       loadConfig({
         UMAMI_API_KEY: "key",
@@ -229,13 +253,70 @@ describe("UmamiClient", () => {
       page: 2,
       pageSize: 1,
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const url = requestUrl(fetchMock.mock.calls[0]?.[0] as Parameters<Fetch>[0]);
     expect(url.searchParams.get("page")).toBe("1");
     expect(url.searchParams.get("pageSize")).toBe("100");
     expect(url.searchParams.get("search")).toBe("ary");
     expect(url.searchParams.get("includeTeams")).toBe("true");
     expect(client.isWebsiteAllowed(WEBSITE_ID.toUpperCase())).toBe(true);
+  });
+
+  it("deduplicates direct and team discovery before applying global pagination", async () => {
+    const secondWebsiteId = "7af8e5ad-83f1-4f50-8db6-26d95b32ec19";
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/teams/${TEAM_ID}/websites`)) {
+        return json({
+          data: [
+            { id: WEBSITE_ID, name: "Duplicate", teamId: TEAM_ID },
+            { id: secondWebsiteId, name: "Member only", teamId: TEAM_ID },
+          ],
+          count: 2,
+          page: 1,
+          pageSize: 100,
+        });
+      }
+      if (url.pathname.endsWith("/teams")) {
+        return json({ data: [{ id: TEAM_ID }], count: 1, page: 1, pageSize: 100 });
+      }
+      return json({
+        data: [{ id: WEBSITE_ID, name: "Direct", teamId: TEAM_ID }],
+        count: 1,
+        page: 1,
+        pageSize: 100,
+      });
+    });
+    const client = new UmamiClient(loadConfig({ UMAMI_API_KEY: "cloud-key" }), fetchMock);
+
+    await expect(client.listWebsites({ page: 2, pageSize: 1 })).resolves.toEqual({
+      data: [{ id: secondWebsiteId, name: "Member only", teamId: TEAM_ID }],
+      count: 2,
+      page: 2,
+      pageSize: 1,
+    });
+  });
+
+  it("stops team discovery explicitly when the bounded team limit is exceeded", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/teams")) {
+        return json({
+          data: Array.from({ length: 26 }, (_, index) => ({ id: `${index}` })),
+          count: 26,
+          page: 1,
+          pageSize: 100,
+        });
+      }
+      return json({ data: [], count: 0, page: 1, pageSize: 100 });
+    });
+    const client = new UmamiClient(loadConfig({ UMAMI_API_KEY: "cloud-key" }), fetchMock);
+
+    await expect(client.listWebsites({ page: 1, pageSize: 20 })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      message: expect.stringContaining("more than 25 teams"),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("uses a fixed, typed POST only for the read-only Umami 3.2 heatmap report", async () => {
