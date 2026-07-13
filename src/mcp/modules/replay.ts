@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { describeRecorderDataStatus, recorderDataStatusShape } from "../recorder-status.js";
+import { requirePagedResponse } from "../report-utils.js";
 import { READ_ONLY_ANNOTATIONS, runTool } from "../result.js";
 import {
   filtersSchema,
@@ -11,6 +13,10 @@ import {
 } from "../schemas.js";
 import type { ToolModule } from "../tool-module.js";
 
+const replayOutputSchema = {
+  data: pagedOutputSchema.data.extend(recorderDataStatusShape).passthrough(),
+};
+
 export const replayModule: ToolModule = {
   id: "replay",
   access: "read",
@@ -20,7 +26,7 @@ export const replayModule: ToolModule = {
       {
         title: "List session replay metadata",
         description:
-          "List Umami 3.2 session replay metadata. Raw rrweb event payloads are intentionally excluded to limit sensitive and oversized model context.",
+          "List Umami 3.2 session replay metadata. Successful responses state whether data is available and why an authorized result is empty. Raw rrweb event payloads are intentionally excluded.",
         inputSchema: {
           websiteId: uuidSchema,
           start: timeSchema,
@@ -37,23 +43,34 @@ export const replayModule: ToolModule = {
             .describe("Minimum replay duration in seconds"),
           filters: filtersSchema.optional(),
         },
-        outputSchema: pagedOutputSchema,
+        outputSchema: replayOutputSchema,
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, page, pageSize, search, minDuration, filters }, extra) =>
-        runTool(() => {
+        runTool(async () => {
           client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/replays`,
-            {
-              ...rangeQuery(start, end, config.maxRangeDays, { filters }),
-              page,
-              pageSize,
-              search,
-              minDuration,
-            },
+          const result = requirePagedResponse(
+            await client.get(
+              `websites/${encodeURIComponent(websiteId)}/replays`,
+              {
+                ...rangeQuery(start, end, config.maxRangeDays, { filters }),
+                page,
+                pageSize,
+                search,
+                minDuration,
+              },
+              extra.signal,
+            ),
+          );
+          const status = await describeRecorderDataStatus(
+            client,
+            websiteId,
+            "replay",
+            result.data.length > 0,
+            "no_data_in_range",
             extra.signal,
           );
+          return { ...result, ...status };
         }),
     );
   },

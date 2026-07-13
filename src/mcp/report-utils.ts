@@ -1,4 +1,5 @@
 import { UmamiError } from "../api/errors.js";
+import type { PagedResponse } from "../api/types.js";
 import type { TimeInput } from "../time.js";
 import { parseTimeRange } from "../time.js";
 
@@ -41,6 +42,40 @@ export function boundedItems(
     itemLimit: limit,
     itemsTruncated: value.length > limit,
     totalItems: value.length,
+  };
+}
+
+export function requirePagedResponse(value: unknown): PagedResponse<unknown> {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !Array.isArray((value as Record<string, unknown>).data) ||
+    typeof (value as Record<string, unknown>).count !== "number" ||
+    typeof (value as Record<string, unknown>).page !== "number" ||
+    typeof (value as Record<string, unknown>).pageSize !== "number"
+  ) {
+    throw new UmamiError("INVALID_RESPONSE", "Umami returned an unexpected paged response.");
+  }
+  return value as PagedResponse<unknown>;
+}
+
+export function boundedPageItems(
+  value: unknown,
+  limit: number,
+): {
+  itemLimit: number;
+  items: unknown[];
+  itemsTruncated: boolean;
+  totalItems: number;
+} {
+  const page = requirePagedResponse(value);
+  const items = page.data.slice(0, limit);
+  return {
+    items,
+    itemLimit: limit,
+    itemsTruncated: page.count > items.length,
+    totalItems: page.count,
   };
 }
 

@@ -12,7 +12,7 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.1.0` is the initial open-source release line. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.1.1` is the current patch release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
 > The `npx` examples require `umami-compass` v0.1.0 or newer. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 

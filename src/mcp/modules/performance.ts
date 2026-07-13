@@ -55,9 +55,44 @@ const performanceBreakdownOutputSchema = {
       metric: z.enum(["lcp", "inp", "cls", "fcp", "ttfb"]),
       dimension: dimensionSchema,
       summary: z.json(),
+      invalidItemsExcluded: z.number().int().nonnegative(),
     })
     .passthrough(),
 };
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function rankPerformanceItems(value: unknown, limit: number) {
+  if (!Array.isArray(value)) return boundedItems(value, limit);
+  const ranked: Array<Record<string, unknown> & { p50: number; p75: number; p95: number }> = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const p50 = finiteNumber(row.p50);
+    const p75 = finiteNumber(row.p75);
+    const p95 = finiteNumber(row.p95);
+    if (p50 === undefined || p75 === undefined || p95 === undefined) continue;
+    const count = finiteNumber(row.count);
+    ranked.push({ ...row, p50, p75, p95, ...(count === undefined ? {} : { count }) });
+  }
+  ranked.sort((left, right) => {
+    const percentileOrder = (right.p75 as number) - (left.p75 as number);
+    if (percentileOrder !== 0) return percentileOrder;
+    const countOrder = finiteNumber(right.count) ?? 0;
+    const leftCount = finiteNumber(left.count) ?? 0;
+    if (countOrder !== leftCount) return countOrder - leftCount;
+    return String(left.name ?? "").localeCompare(String(right.name ?? ""));
+  });
+  return {
+    ...boundedItems(ranked, limit),
+    invalidItemsExcluded: value.length - ranked.length,
+  };
+}
 
 function makeRequest(
   websiteId: string,
@@ -136,7 +171,7 @@ export const performanceModule: ToolModule = {
       {
         title: "Break down Core Web Vitals",
         description:
-          "Rank Umami 3.2 Web Vital percentiles by page, page title, device or browser with explicit context limits.",
+          "Rank Umami 3.2 Web Vital percentiles by p75 for page, page title, device or browser. Rows without numeric percentiles are excluded and reported explicitly.",
         inputSchema: {
           websiteId: uuidSchema,
           start: timeSchema,
@@ -172,7 +207,7 @@ export const performanceModule: ToolModule = {
             metric,
             dimension,
             summary: report.summary,
-            ...boundedItems(report[dimensionKeys[dimension]], limit),
+            ...rankPerformanceItems(report[dimensionKeys[dimension]], limit),
           };
         }),
     );
