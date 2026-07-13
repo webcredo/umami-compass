@@ -58,8 +58,10 @@ export function parseExpandedMetricRows(value: unknown): ExpandedMetricRow[] {
   if (!Array.isArray(value)) {
     throw new UmamiError("INVALID_RESPONSE", "Umami returned invalid expanded metric data.");
   }
-  return value.flatMap((item) => {
-    if (!isRecord(item) || typeof item.name !== "string") return [];
+  return value.map((item) => {
+    if (!isRecord(item) || typeof item.name !== "string") {
+      throw new UmamiError("INVALID_RESPONSE", "Umami returned invalid expanded metric data.");
+    }
     const pageviews = finiteNumber(item.pageviews);
     const visitors = finiteNumber(item.visitors);
     const visits = finiteNumber(item.visits);
@@ -72,9 +74,9 @@ export function parseExpandedMetricRows(value: unknown): ExpandedMetricRow[] {
       bounces === undefined ||
       totaltime === undefined
     ) {
-      return [];
+      throw new UmamiError("INVALID_RESPONSE", "Umami returned invalid expanded metric data.");
     }
-    return [{ name: item.name, pageviews, visitors, visits, bounces, totaltime }];
+    return { name: item.name, pageviews, visitors, visits, bounces, totaltime };
   });
 }
 
@@ -254,13 +256,21 @@ export function appendDimensionEquality(
   value: string,
 ): Query | undefined {
   if (value.includes(",")) return undefined;
+  if (filters.match === "any") {
+    throw new UmamiError(
+      "VALIDATION_ERROR",
+      'Derived channel cross-tabs cannot be combined with filters.match="any" because Umami cannot require candidate predicates outside that OR group.',
+    );
+  }
   return { ...filters, [nextFilterKey(filters, field)]: `eq.${value}` };
 }
 
-function rowFields(row: Record<string, unknown>, fields: readonly string[]) {
+function requireRowFields(row: Record<string, unknown>, fields: readonly string[]) {
   const result: Record<string, string> = {};
   for (const field of fields) {
-    if (typeof row[field] !== "string") return undefined;
+    if (typeof row[field] !== "string") {
+      throw new UmamiError("INVALID_RESPONSE", "Umami returned invalid breakdown candidate data.");
+    }
     result[field] = row[field];
   }
   return result;
@@ -282,7 +292,7 @@ export async function runDerivedChannelBreakdown(
 ) {
   const dimensions = input.fields.filter((field) => field !== "channel") as BreakdownField[];
   const baseFilters = appendReferrerExclusions(input.filters, input.excludedReferrers ?? []);
-  let candidates: Array<Record<string, unknown>> = [{}];
+  let candidates: Array<{ values: Record<string, string> }> = [{ values: {} }];
   let sourceRowsTruncated = false;
   let omittedUnsupportedRows = 0;
 
@@ -303,13 +313,20 @@ export async function runDerivedChannelBreakdown(
     }
     const candidateLimit = Math.min(MAX_CHANNEL_CANDIDATES, Math.max(input.limit * 3, 20));
     sourceRowsTruncated = result.length > candidateLimit || result.length >= 500;
-    candidates = result.slice(0, candidateLimit).filter(isRecord);
+    candidates = result.slice(0, candidateLimit).map((candidate) => {
+      if (!isRecord(candidate)) {
+        throw new UmamiError(
+          "INVALID_RESPONSE",
+          "Umami returned invalid breakdown candidate data.",
+        );
+      }
+      return { values: requireRowFields(candidate, dimensions) };
+    });
   }
 
   const derived = await mapConcurrent(candidates, 4, async (candidate) => {
     let filters: Query | undefined = baseFilters;
-    const values = rowFields(candidate, dimensions);
-    if (!values) return [];
+    const { values } = candidate;
     for (const [field, value] of Object.entries(values)) {
       filters = appendDimensionEquality(filters, field, value);
       if (!filters) {

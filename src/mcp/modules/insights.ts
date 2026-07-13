@@ -3,6 +3,7 @@ import { toSafeError, UmamiError } from "../../api/errors.js";
 import type { PagedResponse, Query, Website } from "../../api/types.js";
 import { parseTimeRange } from "../../time.js";
 import {
+  alignTrafficSeries,
   comparePerformance,
   compareTraffic,
   comparisonPeriod,
@@ -848,6 +849,21 @@ export const insightsModule: ToolModule = {
             }
             const website = await client.getWebsite(websiteId, extra.signal);
             const { channel, ...analyticsFilters } = filters ?? {};
+            const effectiveDimensions =
+              dimensions ??
+              (channel
+                ? (["channel", "device"] as TrafficDimension[])
+                : ([...TRAFFIC_DIMENSIONS] as TrafficDimension[]));
+            if (
+              channel !== undefined &&
+              analyticsFilters.match === "any" &&
+              effectiveDimensions.some((dimension) => dimension !== "channel")
+            ) {
+              throw new UmamiError(
+                "VALIDATION_ERROR",
+                'Derived channel cross-tabs cannot be combined with filters.match="any" because Umami cannot require candidate predicates outside that OR group.',
+              );
+            }
             const quality = await trafficQualityComparison(client, {
               websiteId,
               current,
@@ -857,11 +873,6 @@ export const insightsModule: ToolModule = {
               signal: extra.signal,
               trafficSegment,
             });
-            const effectiveDimensions =
-              dimensions ??
-              (channel
-                ? (["channel", "device"] as TrafficDimension[])
-                : ([...TRAFFIC_DIMENSIONS] as TrafficDimension[]));
             const traffic = await compareTraffic(client, {
               website: websiteSummary(website),
               current,
@@ -989,46 +1000,20 @@ export const insightsModule: ToolModule = {
               fetchSeries(current),
               fetchSeries(comparison),
             ]);
-            const currentSessions = new Map(
-              currentSeries.sessions.map(({ x, y }) => [String(x), y]),
+            const aligned = alignTrafficSeries(
+              current,
+              currentSeries,
+              comparison,
+              comparisonSeries,
+              unit,
+              timezone,
             );
-            const comparisonSessions = new Map(
-              comparisonSeries.sessions.map(({ x, y }) => [String(x), y]),
-            );
-            const bucketCount = Math.max(
-              currentSeries.pageviews.length,
-              comparisonSeries.pageviews.length,
-            );
-            const buckets = Array.from({ length: bucketCount }, (_, index) => {
-              const currentPoint = currentSeries.pageviews[index];
-              const comparisonPoint = comparisonSeries.pageviews[index];
-              const currentPageviews = currentPoint?.y ?? 0;
-              const comparisonPageviews = comparisonPoint?.y ?? 0;
-              return {
-                index,
-                current: currentPoint
-                  ? {
-                      x: currentPoint.x,
-                      pageviews: currentPageviews,
-                      sessions: currentSessions.get(String(currentPoint.x)) ?? 0,
-                    }
-                  : null,
-                comparison: comparisonPoint
-                  ? {
-                      x: comparisonPoint.x,
-                      pageviews: comparisonPageviews,
-                      sessions: comparisonSessions.get(String(comparisonPoint.x)) ?? 0,
-                    }
-                  : null,
-                pageviewChange: {
-                  absolute: currentPageviews - comparisonPageviews,
-                  percent: percentChange(currentPageviews, comparisonPageviews),
-                },
-              };
-            });
             return {
               dataStatus:
-                currentSeries.pageviews.length === 0 && comparisonSeries.pageviews.length === 0
+                currentSeries.pageviews.length === 0 &&
+                currentSeries.sessions.length === 0 &&
+                comparisonSeries.pageviews.length === 0 &&
+                comparisonSeries.sessions.length === 0
                   ? ("empty" as const)
                   : ("available" as const),
               comparisonMode,
@@ -1038,7 +1023,8 @@ export const insightsModule: ToolModule = {
               comparisonPeriod: isoPeriod(comparison),
               current: currentSeries,
               comparison: comparisonSeries,
-              buckets,
+              buckets: aligned.buckets,
+              dataQuality: aligned.dataQuality,
               trafficQuality: quality,
             };
           },
@@ -1106,6 +1092,21 @@ export const insightsModule: ToolModule = {
             const pre: TimePeriod = { startAt: preEnd - actualDuration, endAt: preEnd };
             const website = await client.getWebsite(websiteId, extra.signal);
             const { channel, ...analyticsFilters } = filters ?? {};
+            const effectiveDimensions =
+              dimensions ??
+              (channel
+                ? (["channel", "device"] as TrafficDimension[])
+                : (["path", "referrer", "device", "channel", "event"] as TrafficDimension[]));
+            if (
+              channel !== undefined &&
+              analyticsFilters.match === "any" &&
+              effectiveDimensions.some((dimension) => dimension !== "channel")
+            ) {
+              throw new UmamiError(
+                "VALIDATION_ERROR",
+                'Derived channel cross-tabs cannot be combined with filters.match="any" because Umami cannot require candidate predicates outside that OR group.',
+              );
+            }
             const quality = await trafficQualityComparison(client, {
               websiteId,
               current: post,
@@ -1119,11 +1120,7 @@ export const insightsModule: ToolModule = {
               website: websiteSummary(website),
               current: post,
               comparison: pre,
-              dimensions:
-                dimensions ??
-                (channel
-                  ? (["channel", "device"] as TrafficDimension[])
-                  : (["path", "referrer", "device", "channel", "event"] as TrafficDimension[])),
+              dimensions: effectiveDimensions,
               limit,
               maxRangeDays: config.maxRangeDays,
               filters: analyticsFilters,
@@ -1131,16 +1128,28 @@ export const insightsModule: ToolModule = {
               excludedReferrers: quality.excludedReferrers,
               signal: extra.signal,
             });
-            const performance = includePerformance
-              ? await comparePerformance(client, {
-                  websiteId,
-                  current: post,
-                  comparison: pre,
-                  filters: analyticsFilters,
-                  timezone,
-                  signal: extra.signal,
-                })
-              : { status: "not_requested" as const };
+            const performance = !includePerformance
+              ? { status: "not_requested" as const }
+              : channel
+                ? {
+                    status: "scope_mismatch" as const,
+                    reason:
+                      "Umami 3.2 cannot apply an attributed channel scope to Core Web Vitals, so performance evidence was excluded from this verdict.",
+                    scope: {
+                      requestedChannel: channel,
+                      performanceChannel: "all" as const,
+                      excludedReferrers: quality.excludedReferrers,
+                    },
+                  }
+                : await comparePerformance(client, {
+                    websiteId,
+                    current: post,
+                    comparison: pre,
+                    filters: analyticsFilters,
+                    excludedReferrers: quality.excludedReferrers,
+                    timezone,
+                    signal: extra.signal,
+                  });
             const trafficPercent = traffic.changes.pageviews?.percent ?? null;
             const performanceChanges = "changes" in performance ? performance.changes : undefined;
             const performanceRegressions =
@@ -1163,18 +1172,23 @@ export const insightsModule: ToolModule = {
                   ? "positive"
                   : "negative";
             const verdict =
-              trafficImpact === "negative" && performanceRegressions.length > 0
-                ? "likely_regression"
-                : trafficImpact === "positive" && performanceImprovements.length > 0
-                  ? "likely_improvement"
-                  : trafficImpact === "neutral" && performanceRegressions.length === 0
-                    ? "no_clear_change"
-                    : "mixed";
+              performance.status !== "available"
+                ? trafficImpact === "neutral"
+                  ? "no_clear_change"
+                  : "traffic_change_only"
+                : trafficImpact === "negative" && performanceRegressions.length > 0
+                  ? "likely_regression"
+                  : trafficImpact === "positive" && performanceImprovements.length > 0
+                    ? "likely_improvement"
+                    : trafficImpact === "neutral" && performanceRegressions.length === 0
+                      ? "no_clear_change"
+                      : "mixed";
             const performanceEvidenceSufficient =
               !includePerformance ||
               (performance.status === "available" &&
                 "sampleSufficient" in performance &&
                 performance.sampleSufficient === true);
+            const performanceScopeComparable = performance.status !== "scope_mismatch";
             const trafficEvidenceSufficient =
               traffic.current.pageviews >= 500 &&
               traffic.comparison.pageviews >= 500 &&
@@ -1212,10 +1226,12 @@ export const insightsModule: ToolModule = {
                 trafficChangePercent: trafficPercent,
                 performanceRegressions,
                 performanceImprovements,
+                performanceScopeComparable,
                 confidence:
                   trafficEvidenceSufficient && performanceEvidenceSufficient ? "medium" : "low",
-                caveat:
-                  "This is a before/after association. Campaigns, seasonality, outages, and other concurrent changes can produce the same pattern.",
+                caveat: performanceScopeComparable
+                  ? "This is a before/after association. Campaigns, seasonality, outages, and other concurrent changes can produce the same pattern."
+                  : "This is a traffic-only before/after association for the selected channel. Core Web Vitals were excluded because Umami cannot apply the same channel scope.",
               },
               traffic,
               trafficQuality: quality,

@@ -4,7 +4,6 @@ import { toSafeError, UmamiError } from "../api/errors.js";
 import type { PerformanceMetric, Query, Website } from "../api/types.js";
 import type { TimeInput } from "../time.js";
 import { parseTimeRange } from "../time.js";
-import { reportFilters } from "./report-utils.js";
 import {
   appendReferrerExclusions,
   type filtersSchema,
@@ -163,6 +162,225 @@ export function comparisonPeriod(
   const duration = current.endAt - current.startAt;
   const endAt = current.startAt - 1;
   return { startAt: endAt - duration, endAt };
+}
+
+export type TrafficSeriesUnit = "minute" | "hour" | "day" | "month" | "year";
+
+interface CalendarParts {
+  day: number;
+  hour: number;
+  minute: number;
+  month: number;
+  year: number;
+}
+
+interface TrafficSeriesPoint {
+  x: number | string;
+  y: number;
+}
+
+interface TrafficSeriesData {
+  pageviews: TrafficSeriesPoint[];
+  sessions: TrafficSeriesPoint[];
+}
+
+const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function calendarPartsAt(timestamp: number, timezone: string): CalendarParts {
+  let formatter = dateTimeFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    dateTimeFormatters.set(timezone, formatter);
+  }
+  const values = new Map(
+    formatter
+      .formatToParts(new Date(timestamp))
+      .filter(({ type }) => type !== "literal")
+      .map(({ type, value }) => [type, Number(value)]),
+  );
+  const year = values.get("year");
+  const month = values.get("month");
+  const day = values.get("day");
+  const hour = values.get("hour");
+  const minute = values.get("minute");
+  if ([year, month, day, hour, minute].some((value) => value === undefined)) {
+    throw new UmamiError("INVALID_RESPONSE", "Could not normalize the requested series timezone.");
+  }
+  return {
+    year: year as number,
+    month: month as number,
+    day: day as number,
+    hour: hour as number,
+    minute: minute as number,
+  };
+}
+
+function seriesPointParts(value: number | string, timezone: string): CalendarParts {
+  if (typeof value === "number") {
+    const timestamp = Math.abs(value) < 100_000_000_000 ? value * 1_000 : value;
+    return calendarPartsAt(timestamp, timezone);
+  }
+  const text = value.trim();
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
+    const timestamp = Date.parse(text);
+    if (Number.isFinite(timestamp)) return calendarPartsAt(timestamp, timezone);
+  }
+  const match = /^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?(?:[ T](\d{2})(?::(\d{2}))?)?/.exec(text);
+  if (!match) {
+    throw new UmamiError("INVALID_RESPONSE", "Umami returned an invalid series bucket.");
+  }
+  return {
+    year: Number(match[1]),
+    month: Number(match[2] ?? 1),
+    day: Number(match[3] ?? 1),
+    hour: Number(match[4] ?? 0),
+    minute: Number(match[5] ?? 0),
+  };
+}
+
+function truncateCalendarParts(parts: CalendarParts, unit: TrafficSeriesUnit): CalendarParts {
+  return {
+    year: parts.year,
+    month: unit === "year" ? 1 : parts.month,
+    day: unit === "year" || unit === "month" ? 1 : parts.day,
+    hour: unit === "minute" || unit === "hour" ? parts.hour : 0,
+    minute: unit === "minute" ? parts.minute : 0,
+  };
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function calendarKey(parts: CalendarParts, unit: TrafficSeriesUnit): string {
+  const year = String(parts.year).padStart(4, "0");
+  if (unit === "year") return year;
+  const month = `${year}-${pad(parts.month)}`;
+  if (unit === "month") return month;
+  const day = `${month}-${pad(parts.day)}`;
+  if (unit === "day") return day;
+  const hour = `${day} ${pad(parts.hour)}`;
+  return unit === "hour" ? hour : `${hour}:${pad(parts.minute)}`;
+}
+
+function periodBucketKeys(period: TimePeriod, unit: TrafficSeriesUnit, timezone: string): string[] {
+  const sampleStep = unit === "minute" ? 60_000 : unit === "hour" ? 15 * 60_000 : 6 * 3_600_000;
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  const addTimestamp = (timestamp: number) => {
+    const key = calendarKey(
+      truncateCalendarParts(calendarPartsAt(timestamp, timezone), unit),
+      unit,
+    );
+    if (seen.has(key)) return;
+    seen.add(key);
+    keys.push(key);
+    if (keys.length > 10_000) {
+      throw new UmamiError(
+        "VALIDATION_ERROR",
+        "The aligned traffic series exceeds the 10,000-point safety limit.",
+      );
+    }
+  };
+
+  addTimestamp(period.startAt);
+  let timestamp = Math.ceil(period.startAt / sampleStep) * sampleStep;
+  while (timestamp <= period.endAt) {
+    addTimestamp(timestamp);
+    timestamp += sampleStep;
+  }
+  addTimestamp(period.endAt);
+  return keys;
+}
+
+function seriesValues(
+  points: readonly TrafficSeriesPoint[],
+  unit: TrafficSeriesUnit,
+  timezone: string,
+): Map<string, number> {
+  const values = new Map<string, number>();
+  for (const point of points) {
+    const key = calendarKey(truncateCalendarParts(seriesPointParts(point.x, timezone), unit), unit);
+    values.set(key, (values.get(key) ?? 0) + point.y);
+  }
+  return values;
+}
+
+function fillTrafficSeries(
+  period: TimePeriod,
+  series: TrafficSeriesData,
+  unit: TrafficSeriesUnit,
+  timezone: string,
+) {
+  const pageviews = seriesValues(series.pageviews, unit, timezone);
+  const sessions = seriesValues(series.sessions, unit, timezone);
+  const keys = periodBucketKeys(period, unit, timezone);
+  const expected = new Set(keys);
+  if ([...pageviews.keys(), ...sessions.keys()].some((key) => !expected.has(key))) {
+    throw new UmamiError(
+      "INVALID_RESPONSE",
+      "Umami returned a series bucket outside the requested period.",
+    );
+  }
+  return keys.map((x) => ({
+    x,
+    pageviews: pageviews.get(x) ?? 0,
+    sessions: sessions.get(x) ?? 0,
+  }));
+}
+
+export function alignTrafficSeries(
+  currentPeriod: TimePeriod,
+  currentSeries: TrafficSeriesData,
+  comparisonPeriod: TimePeriod,
+  comparisonSeries: TrafficSeriesData,
+  unit: TrafficSeriesUnit,
+  timezone: string,
+) {
+  const current = fillTrafficSeries(currentPeriod, currentSeries, unit, timezone);
+  const comparison = fillTrafficSeries(comparisonPeriod, comparisonSeries, unit, timezone);
+  const equalBucketCount = current.length === comparison.length;
+  const bucketCount = Math.max(current.length, comparison.length);
+  return {
+    buckets: equalBucketCount
+      ? Array.from({ length: bucketCount }, (_, index) => {
+          const currentPoint = current[index];
+          const comparisonPoint = comparison[index];
+          const currentPageviews = currentPoint?.pageviews ?? 0;
+          const comparisonPageviews = comparisonPoint?.pageviews ?? 0;
+          return {
+            index,
+            current: currentPoint ?? null,
+            comparison: comparisonPoint ?? null,
+            pageviewChange: {
+              absolute: currentPageviews - comparisonPageviews,
+              percent: percentChange(currentPageviews, comparisonPageviews),
+            },
+          };
+        })
+      : [],
+    dataQuality: {
+      sparseBucketsFilled: true,
+      currentBucketCount: current.length,
+      comparisonBucketCount: comparison.length,
+      equalBucketCount,
+      alignedChangesAvailable: equalBucketCount,
+      ...(equalBucketCount
+        ? {}
+        : {
+            alignmentIssue:
+              "Current and comparison periods contain different numbers of local-time buckets; aligned deltas are omitted to avoid shifted comparisons.",
+          }),
+    },
+  };
 }
 
 export async function mapConcurrent<T, R>(
@@ -589,6 +807,10 @@ export async function compareTraffic(client: UmamiClient, input: TrafficComparis
         : ("available" as const),
     website,
     ...(channel ? { channel } : {}),
+    scope: {
+      channel: channel ?? "all",
+      excludedReferrers: [...excludedReferrers],
+    },
     currentPeriod: isoPeriod(current),
     comparisonPeriod: isoPeriod(comparison),
     current: currentTotals,
@@ -682,25 +904,34 @@ export async function comparePerformance(
   input: {
     comparison: TimePeriod;
     current: TimePeriod;
+    excludedReferrers?: readonly string[];
     filters?: Filters;
     signal?: AbortSignal;
     timezone: string;
     websiteId: string;
   },
 ) {
-  const request = (period: TimePeriod) => ({
-    websiteId: input.websiteId,
-    type: "performance" as const,
-    parameters: {
-      startDate: new Date(period.startAt).toISOString(),
-      endDate: new Date(period.endAt).toISOString(),
-      metric: "lcp" as const,
-      timezone: input.timezone,
-      unit: "day" as const,
-    },
-    filters: reportFilters(input.filters),
-  });
+  const scope = {
+    channel: "all" as const,
+    excludedReferrers: [...(input.excludedReferrers ?? [])],
+  };
   try {
+    const { excludeBounce, ...filters } = analysisFilters(input.filters, input.excludedReferrers);
+    const request = (period: TimePeriod) => ({
+      websiteId: input.websiteId,
+      type: "performance" as const,
+      parameters: {
+        startDate: new Date(period.startAt).toISOString(),
+        endDate: new Date(period.endAt).toISOString(),
+        metric: "lcp" as const,
+        timezone: input.timezone,
+        unit: "day" as const,
+      },
+      filters: {
+        ...filters,
+        ...(excludeBounce === true ? { excludeBounce: "true" } : {}),
+      },
+    });
     const [currentResult, comparisonResult] = await Promise.all([
       client.runReport(request(input.current), input.signal),
       client.runReport(request(input.comparison), input.signal),
@@ -749,6 +980,7 @@ export async function comparePerformance(
       current.count === 0 && comparison.count === 0 ? ("empty" as const) : ("available" as const);
     return {
       status,
+      scope,
       currentSampleCount: current.count,
       comparisonSampleCount: comparison.count,
       minimumSampleCount: MIN_PERFORMANCE_SAMPLES,
@@ -756,6 +988,6 @@ export async function comparePerformance(
       changes,
     };
   } catch (error) {
-    return { status: "unavailable", error: toSafeError(error) };
+    return { status: "unavailable", scope, error: toSafeError(error) };
   }
 }

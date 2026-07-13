@@ -102,29 +102,50 @@ describe("Umami Compass MCP server", () => {
       enabledToolsets?: string[];
       version?: string;
     };
-    expect(capabilityData.version).toBe("0.3.0");
+    expect(capabilityData.version).toBe("0.3.1");
     expect(capabilityData.enabledToolsets).toEqual(["core", "insights"]);
     expect(JSON.stringify(capabilities.contents)).not.toContain("test-key");
   });
 
   it("returns local server version and feature capabilities without an upstream request", async () => {
     const fetchMock = vi.fn<Fetch>();
-    const client = await connect(fetchMock, "core");
+    const [client, enabledClient] = await Promise.all([
+      connect(fetchMock, "core"),
+      connect(fetchMock, "core,insights"),
+    ]);
 
     const result = await client.callTool({ name: "get_server_info", arguments: {} });
+    const enabledResult = await enabledClient.callTool({
+      name: "get_server_info",
+      arguments: {},
+    });
 
     expect(result.structuredContent).toMatchObject({
       data: {
         name: "umami-compass",
-        version: "0.3.0",
+        version: "0.3.1",
         access: "read-only",
         capabilities: {
-          directTrafficIsolation: true,
-          derivedChannelBreakdowns: true,
-          humanTrafficPreset: true,
+          emptyReferrerIsolation: true,
+          directTrafficIsolation: false,
+          derivedChannelBreakdowns: false,
+          referralSpamHeuristics: false,
+          humanTrafficPreset: false,
+          periodSeriesComparison: false,
         },
       },
       meta: { dataStatus: "available" },
+    });
+    expect(enabledResult.structuredContent).toMatchObject({
+      data: {
+        capabilities: {
+          directTrafficIsolation: true,
+          derivedChannelBreakdowns: true,
+          referralSpamHeuristics: true,
+          humanTrafficPreset: true,
+          periodSeriesComparison: true,
+        },
+      },
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -217,6 +238,42 @@ describe("Umami Compass MCP server", () => {
       ).not.toBe(true);
     }
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("enforces field-specific and aggregate structured-filter budgets", async () => {
+    const fetchMock = vi.fn<Fetch>();
+    const client = await connect(fetchMock, "core");
+    const common = {
+      websiteId: WEBSITE_ID,
+      start: "2026-07-01",
+      end: "2026-07-02",
+    };
+
+    const oversizedCountry = await client.callTool({
+      name: "get_website_stats",
+      arguments: {
+        ...common,
+        filters: { country: { operator: "equals", value: "country-code-too-long" } },
+      },
+    });
+    const oversizedSerializedFilter = await client.callTool({
+      name: "get_website_stats",
+      arguments: {
+        ...common,
+        filters: {
+          path: {
+            operator: "equals",
+            value: Array.from({ length: 20 }, (_, index) => `${index}-${"x".repeat(1_000)}`),
+          },
+        },
+      },
+    });
+
+    expect(oversizedCountry.isError).toBe(true);
+    expect(JSON.stringify(oversizedCountry)).toContain("Too big");
+    expect(oversizedSerializedFilter.isError).toBe(true);
+    expect(JSON.stringify(oversizedSerializedFilter)).toContain("16384 bytes");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("fails closed when Umami drifts from the pageview contract", async () => {
@@ -858,6 +915,110 @@ describe("Umami Compass MCP server", () => {
       },
       meta: { truncated: false },
     });
+  });
+
+  it("fails closed on malformed derived-channel candidate rows", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        expect(url.searchParams.get("type")).toBe("referrer");
+        return Response.json([]);
+      }
+      if (url.pathname.endsWith("/reports/breakdown")) {
+        return Response.json([{ device: null, visitors: 1_000 }]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock, "reports");
+
+    const result = await client.callTool({
+      name: "run_breakdown_report",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        fields: ["channel", "device"],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("invalid breakdown candidate data");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects derived channel cross-tabs inside an upstream OR filter group", async () => {
+    const fetchMock = vi.fn<Fetch>();
+    const client = await connect(fetchMock, "reports");
+
+    const result = await client.callTool({
+      name: "run_breakdown_report",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        fields: ["channel", "device"],
+        filters: { match: "any", path: "/landing" },
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("cannot require candidate predicates");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects attributed channel by custom-event breakdowns", async () => {
+    const fetchMock = vi.fn<Fetch>();
+    const client = await connect(fetchMock, "reports");
+
+    const result = await client.callTool({
+      name: "run_breakdown_report",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        fields: ["channel", "event"],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("cannot cross-tabulate attributed channels");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the human preset would put mandatory exclusions in match=any", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        return Response.json([
+          {
+            name: "xpwesthmfqphh.com",
+            pageviews: 100,
+            visitors: 100,
+            visits: 100,
+            bounces: 98,
+            totaltime: 0,
+          },
+        ]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock, "reports");
+
+    const result = await client.callTool({
+      name: "run_breakdown_report",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        fields: ["path"],
+        filters: { match: "any", path: "/landing" },
+        trafficSegment: "human",
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("mandatory spam exclusions");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("applies the human traffic preset with explicit referral exclusions", async () => {

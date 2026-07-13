@@ -39,86 +39,132 @@ export const filterOperatorSchema = z.enum([
   "is_not_empty",
 ]);
 
-const filterConditionSchema = z
-  .object({
-    operator: filterOperatorSchema,
-    value: z
-      .union([z.string().max(2_000), z.array(z.string().max(2_000)).min(1).max(100)])
-      .optional(),
-  })
-  .strict()
-  .superRefine(({ operator, value }, context) => {
-    const emptyOperator = operator === "is_empty" || operator === "is_not_empty";
-    if (emptyOperator && value !== undefined) {
-      context.addIssue({
-        code: "custom",
-        message: `${operator} does not accept a value`,
-        path: ["value"],
-      });
-    } else if (!emptyOperator && value === undefined) {
-      context.addIssue({
-        code: "custom",
-        message: `${operator} requires a value`,
-        path: ["value"],
-      });
-    }
-    if (Array.isArray(value) && !["equals", "not_equals"].includes(operator)) {
-      context.addIssue({
-        code: "custom",
-        message: `${operator} accepts one string value`,
-        path: ["value"],
-      });
-    }
-    if (
-      (operator === "equals" || operator === "not_equals") &&
-      (Array.isArray(value) ? value : value === undefined ? [] : [value]).some((item) =>
-        item.includes(","),
-      )
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "equals values cannot contain commas; pass separate values in the array",
-        path: ["value"],
-      });
-    }
-  });
+const MAX_FILTER_CONDITIONS_PER_FIELD = 10;
+const MAX_FILTER_VALUES_PER_CONDITION = 20;
+const MAX_TOTAL_FILTER_CONDITIONS = 30;
+const MAX_TOTAL_FILTER_VALUES = 100;
+const MAX_SERIALIZED_FILTER_BYTES = 16_384;
+
+const filterConditionSchema = (maximum: number) =>
+  z
+    .object({
+      operator: filterOperatorSchema,
+      value: z
+        .union([
+          z.string().max(maximum),
+          z.array(z.string().max(maximum)).min(1).max(MAX_FILTER_VALUES_PER_CONDITION),
+        ])
+        .optional(),
+    })
+    .strict()
+    .superRefine(({ operator, value }, context) => {
+      const emptyOperator = operator === "is_empty" || operator === "is_not_empty";
+      if (emptyOperator && value !== undefined) {
+        context.addIssue({
+          code: "custom",
+          message: `${operator} does not accept a value`,
+          path: ["value"],
+        });
+      } else if (!emptyOperator && value === undefined) {
+        context.addIssue({
+          code: "custom",
+          message: `${operator} requires a value`,
+          path: ["value"],
+        });
+      }
+      if (Array.isArray(value) && !["equals", "not_equals"].includes(operator)) {
+        context.addIssue({
+          code: "custom",
+          message: `${operator} accepts one string value`,
+          path: ["value"],
+        });
+      }
+      if (
+        (operator === "equals" || operator === "not_equals") &&
+        (Array.isArray(value) ? value : value === undefined ? [] : [value]).some((item) =>
+          item.includes(","),
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "equals values cannot contain commas; pass separate values in the array",
+          path: ["value"],
+        });
+      }
+    });
 
 const textFilterSchema = (maximum: number) =>
   z.union([
     z.string().max(maximum),
-    filterConditionSchema,
-    z.array(filterConditionSchema).min(1).max(10),
+    filterConditionSchema(maximum),
+    z.array(filterConditionSchema(maximum)).min(1).max(MAX_FILTER_CONDITIONS_PER_FIELD),
   ]);
 
-export const filtersSchema = z
-  .object({
-    browser: textFilterSchema(200).optional(),
-    city: textFilterSchema(200).optional(),
-    cohort: uuidSchema.optional(),
-    country: textFilterSchema(10).optional(),
-    device: textFilterSchema(200).optional(),
-    distinctId: textFilterSchema(500).optional(),
-    eventType: z.number().int().positive().optional(),
-    event: textFilterSchema(500).optional(),
-    excludeBounce: z.boolean().optional(),
-    hostname: textFilterSchema(500).optional(),
-    language: textFilterSchema(100).optional(),
-    os: textFilterSchema(200).optional(),
-    match: z.enum(["all", "any"]).optional(),
-    path: textFilterSchema(2_000).optional(),
-    query: textFilterSchema(2_000).optional(),
-    referrer: textFilterSchema(2_000).optional(),
-    region: textFilterSchema(200).optional(),
-    segment: uuidSchema.optional(),
-    tag: textFilterSchema(500).optional(),
-    title: textFilterSchema(1_000).optional(),
-    utmCampaign: textFilterSchema(500).optional(),
-    utmContent: textFilterSchema(500).optional(),
-    utmMedium: textFilterSchema(500).optional(),
-    utmSource: textFilterSchema(500).optional(),
-    utmTerm: textFilterSchema(500).optional(),
-  })
-  .strict();
+const filterFields = {
+  browser: textFilterSchema(200).optional(),
+  city: textFilterSchema(200).optional(),
+  cohort: uuidSchema.optional(),
+  country: textFilterSchema(10).optional(),
+  device: textFilterSchema(200).optional(),
+  distinctId: textFilterSchema(500).optional(),
+  eventType: z.number().int().positive().optional(),
+  event: textFilterSchema(500).optional(),
+  excludeBounce: z.boolean().optional(),
+  hostname: textFilterSchema(500).optional(),
+  language: textFilterSchema(100).optional(),
+  os: textFilterSchema(200).optional(),
+  match: z.enum(["all", "any"]).optional(),
+  path: textFilterSchema(2_000).optional(),
+  query: textFilterSchema(2_000).optional(),
+  referrer: textFilterSchema(2_000).optional(),
+  region: textFilterSchema(200).optional(),
+  segment: uuidSchema.optional(),
+  tag: textFilterSchema(500).optional(),
+  title: textFilterSchema(1_000).optional(),
+  utmCampaign: textFilterSchema(500).optional(),
+  utmContent: textFilterSchema(500).optional(),
+  utmMedium: textFilterSchema(500).optional(),
+  utmSource: textFilterSchema(500).optional(),
+  utmTerm: textFilterSchema(500).optional(),
+};
+
+function validateFilterBudget(filters: Record<string, unknown>, context: z.RefinementCtx) {
+  let conditionCount = 0;
+  let valueCount = 0;
+  for (const value of Object.values(filters)) {
+    const conditions = Array.isArray(value) ? value : [value];
+    for (const condition of conditions) {
+      if (!isFilterCondition(condition)) continue;
+      conditionCount += 1;
+      valueCount += Array.isArray(condition.value) ? condition.value.length : 1;
+    }
+  }
+  if (conditionCount > MAX_TOTAL_FILTER_CONDITIONS) {
+    context.addIssue({
+      code: "custom",
+      message: `filters cannot contain more than ${MAX_TOTAL_FILTER_CONDITIONS} structured conditions`,
+    });
+  }
+  if (valueCount > MAX_TOTAL_FILTER_VALUES) {
+    context.addIssue({
+      code: "custom",
+      message: `filters cannot contain more than ${MAX_TOTAL_FILTER_VALUES} structured values`,
+    });
+  }
+
+  const params = new URLSearchParams();
+  for (const [name, value] of Object.entries(serializeFilters(filters))) {
+    if (value !== undefined) params.append(name, String(value));
+  }
+  if (new TextEncoder().encode(params.toString()).length > MAX_SERIALIZED_FILTER_BYTES) {
+    context.addIssue({
+      code: "custom",
+      message: `serialized filters cannot exceed ${MAX_SERIALIZED_FILTER_BYTES} bytes`,
+    });
+  }
+}
+
+export const filtersSchema = z.object(filterFields).strict().superRefine(validateFilterBudget);
 
 export const TRAFFIC_CHANNELS = [
   "direct",
@@ -140,13 +186,17 @@ export const TRAFFIC_CHANNELS = [
 
 export const trafficChannelSchema = z.enum(TRAFFIC_CHANNELS);
 
-export const segmentedFiltersSchema = filtersSchema.extend({
-  channel: trafficChannelSchema.optional(),
-});
+export const segmentedFiltersSchema = z
+  .object({ ...filterFields, channel: trafficChannelSchema.optional() })
+  .strict()
+  .superRefine(validateFilterBudget);
 
 export const trafficSegmentSchema = z.enum(["all", "human"]).default("all");
 
-type FilterCondition = z.infer<typeof filterConditionSchema>;
+type FilterCondition = {
+  operator: z.infer<typeof filterOperatorSchema>;
+  value?: string | string[];
+};
 
 const UPSTREAM_OPERATORS: Record<FilterCondition["operator"], string> = {
   equals: "eq",
@@ -211,6 +261,12 @@ export function appendReferrerExclusions(filters: Query, domains: readonly strin
     (domain) => !domain.includes(","),
   );
   if (values.length === 0) return filters;
+  if (filters.match === "any") {
+    throw new UmamiError(
+      "VALIDATION_ERROR",
+      'trafficSegment="human" cannot be combined with filters.match="any" because Umami cannot apply mandatory spam exclusions outside that OR group.',
+    );
+  }
   let suffix = 1;
   while (`domain${suffix}` in filters) suffix += 1;
   return { ...filters, [`domain${suffix}`]: `neq.${values.join(",")}` };

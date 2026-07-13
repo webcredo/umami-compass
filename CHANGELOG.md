@@ -4,12 +4,30 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-13
+
+### Fixed
+
+- Fail closed instead of weakening human-traffic exclusions or channel fan-out predicates when `filters.match="any"` would combine mandatory filters through upstream OR semantics.
+- Fill missing time-series buckets by period, unit, and timezone before aligning current and comparison data, generate only real local-time buckets across DST, and omit aligned deltas when unequal bucket counts would shift comparisons.
+- Keep release-impact traffic and Core Web Vitals in the same human-referrer scope, and exclude unfilterable performance evidence from channel-specific verdicts.
+- Describe empty-referrer isolation separately from exact `direct` channel attribution, which can also depend on campaign parameters.
+- Reject unsupported channel-by-event breakdowns instead of returning empty or meaningless rows.
+- Apply field-specific structured-filter limits, aggregate condition/value caps, and a 16 KiB serialized-query budget.
+- Reject malformed expanded-metric and derived-breakdown candidate rows instead of silently converting channel or spam evidence into zero/absent data.
+- Report effective server capabilities from the enabled toolsets instead of advertising disabled insight and report features.
+
+### Security
+
+- Preserve mandatory exclusion and candidate predicates as fail-closed constraints rather than allowing an upstream OR group to widen the requested data scope.
+- Bound structured-filter cardinality and serialized size before constructing an upstream request.
+
 ## [0.3.0] - 2026-07-13
 
 ### Added
 
 - Add structured `equals`, `not_equals`, `contains`, `not_contains`, regex, and empty-value filter operators, including array-backed `IN` and `NOT IN` values.
-- Add direct-traffic isolation for both `referrer: ""` and `referrer: { operator: "is_empty" }` without triggering Umami's external-referrer-only behavior.
+- Add empty-referrer isolation for both `referrer: ""` and `referrer: { operator: "is_empty" }` without triggering Umami's external-referrer-only behavior; exact direct-channel attribution remains available through `filters.channel="direct"`.
 - Add channel filters to traffic-change and release-impact analysis, plus bounded derived `channel × dimension` support in `run_breakdown_report` with explicit fan-out and truncation metadata.
 - Add conservative referral-spam detection, evidence and thresholds, the opt-in `trafficSegment: "human"` preset, and a `referral_spam` tracking-health check.
 - Add `compare_traffic_series` for aligned daily or finer-grained current/baseline buckets and `get_server_info` for local version, limits, toolsets, and feature discovery.

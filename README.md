@@ -13,7 +13,7 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.3.0` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.3.1` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
 > The `npx` examples follow the stable npm release channel and check it whenever the MCP process starts. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 
@@ -43,7 +43,7 @@ npx --yes --prefer-online umami-compass@latest
 
 `@latest` selects the stable npm channel and `--prefer-online` makes npm check the registry even when package metadata is cached. npm still reuses the cached package when that exact release is already present. Updates take effect the next time the MCP process starts; an already running local server cannot replace itself.
 
-Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.3.0`. Never use the preview channel for an unattended production setup.
+Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.3.1`. Never use the preview channel for an unattended production setup.
 
 ### Umami Cloud
 
@@ -125,11 +125,15 @@ Plain string filters remain compatible. Structured filters add `equals`, `not_eq
 }
 ```
 
-For compatibility, `{"referrer": ""}` also isolates direct rows. Compass uses Umami's neutral referrer-domain column for structured and empty referrer filters so direct/internal traffic is not accidentally removed by Umami's external-referrer behavior.
+For compatibility, `{"referrer": ""}` also isolates rows whose referrer domain is empty. This is not always the same as Umami's `direct` channel: a no-referrer visit with campaign parameters can be attributed to affiliate, email, paid, or another channel. Use `filters.channel: "direct"` when exact Umami channel attribution matters. Compass uses Umami's neutral referrer-domain column for structured and empty-referrer filters so internal/no-referrer traffic is not accidentally removed by Umami's external-referrer behavior.
 
-`explain_traffic_change`, `analyze_release_impact`, and `run_breakdown_report` accept `filters.channel`, including `direct`. `run_breakdown_report` also accepts `channel` as a field, so requests such as `channel × device` work. Umami 3.2 does not natively expose channel as a filter or breakdown field; Compass derives these results through bounded expanded-metric fan-out and reports candidate coverage, omitted rows, request count, and truncation under `dataQuality`.
+`explain_traffic_change`, `analyze_release_impact`, and `run_breakdown_report` accept `filters.channel`, including `direct`. `run_breakdown_report` also accepts `channel` as a field, so requests such as `channel × device` work. Umami 3.2 does not natively expose channel as a filter or breakdown field; Compass derives these results through bounded expanded-metric fan-out and reports candidate coverage, omitted rows, request count, and truncation under `dataQuality`. Channel cross-tabs cannot be combined with custom events or with `filters.match: "any"`, because Umami cannot express the required candidate predicate outside that OR group; Compass rejects these requests instead of returning overlapping totals.
 
-Traffic-change, release-impact, comparison-series, and breakdown results conservatively flag referral-spam candidates using the combined pattern of a generated-looking domain, very high bounce rate, near-zero visit duration, and minimum traffic. Set `trafficSegment` to `human` to exclude only those candidates with native negative filters. The preset fails closed when both periods cannot be assessed. Findings remain heuristics, not a definitive bot classification, and include their evidence and thresholds.
+Traffic-change, release-impact, comparison-series, and breakdown results conservatively flag referral-spam candidates using the combined pattern of a generated-looking domain, very high bounce rate, near-zero visit duration, and minimum traffic. Set `trafficSegment` to `human` to exclude only those candidates with native negative filters. The preset fails closed when both periods cannot be assessed or when mandatory exclusions would be weakened by `filters.match: "any"`. Findings remain heuristics, not a definitive bot classification, and include their evidence and thresholds.
+
+`compare_traffic_series` fills sparse rows against real buckets in the requested timezone, including DST transitions. If current and comparison periods contain different numbers of local-time buckets, it returns the raw series with `alignedChangesAvailable: false` and omits derived bucket deltas instead of shifting the comparison.
+
+Structured filters retain field-specific length limits, at most 20 values per condition, 30 conditions and 100 values across one request, and a 16 KiB serialized-query budget.
 
 ## Configuration
 

@@ -573,7 +573,39 @@ describe("Umami Compass insights", () => {
     });
   });
 
-  it("aligns daily current and comparison series to locate a break date", async () => {
+  it.each([
+    ["explain_traffic_change", { start: "2026-07-01", end: "2026-07-02", dimensions: ["device"] }],
+    [
+      "analyze_release_impact",
+      { releaseAt: "2026-07-01T00:00:00.000Z", windowDays: 7, dimensions: ["device"] },
+    ],
+  ])("rejects %s channel fan-out inside match=any", async (name, arguments_) => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-13T12:00:00.000Z");
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name,
+      arguments: {
+        websiteId: WEBSITE_ID,
+        ...arguments_,
+        filters: { channel: "direct", match: "any", path: "/landing" },
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("cannot require candidate predicates");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills sparse daily series before aligning relative buckets", async () => {
     const currentStart = Date.parse("2026-07-01T00:00:00.000Z");
     const fetchMock = vi.fn<Fetch>(async (input) => {
       const url = requestUrl(input);
@@ -584,19 +616,20 @@ describe("Umami Compass insights", () => {
           pageviews: isCurrent
             ? [
                 { x: "2026-07-01", y: 100 },
-                { x: "2026-07-02", y: 10 },
+                { x: "2026-07-03", y: 10 },
               ]
             : [
-                { x: "2026-06-29", y: 90 },
-                { x: "2026-06-30", y: 80 },
+                { x: "2026-06-28", y: 90 },
+                { x: "2026-06-29", y: 80 },
+                { x: "2026-06-30", y: 70 },
               ],
           sessions: isCurrent
             ? [
                 { x: "2026-07-01", y: 70 },
-                { x: "2026-07-02", y: 8 },
+                { x: "2026-07-03", y: 8 },
               ]
             : [
-                { x: "2026-06-29", y: 65 },
+                { x: "2026-06-28", y: 65 },
                 { x: "2026-06-30", y: 60 },
               ],
         });
@@ -610,7 +643,7 @@ describe("Umami Compass insights", () => {
       arguments: {
         websiteId: WEBSITE_ID,
         start: "2026-07-01",
-        end: "2026-07-02",
+        end: "2026-07-03",
         unit: "day",
       },
     });
@@ -619,12 +652,208 @@ describe("Umami Compass insights", () => {
     expect(result.structuredContent).toMatchObject({
       data: {
         buckets: [
-          { index: 0, pageviewChange: { absolute: 10 } },
-          { index: 1, pageviewChange: { absolute: -70, percent: -87.5 } },
+          {
+            index: 0,
+            current: { x: "2026-07-01", pageviews: 100, sessions: 70 },
+            comparison: { x: "2026-06-28", pageviews: 90, sessions: 65 },
+            pageviewChange: { absolute: 10 },
+          },
+          {
+            index: 1,
+            current: { x: "2026-07-02", pageviews: 0, sessions: 0 },
+            comparison: { x: "2026-06-29", pageviews: 80, sessions: 0 },
+            pageviewChange: { absolute: -80, percent: -100 },
+          },
+          {
+            index: 2,
+            current: { x: "2026-07-03", pageviews: 10, sessions: 8 },
+            comparison: { x: "2026-06-30", pageviews: 70, sessions: 60 },
+            pageviewChange: { absolute: -60 },
+          },
         ],
+        dataQuality: {
+          sparseBucketsFilled: true,
+          currentBucketCount: 3,
+          comparisonBucketCount: 3,
+          equalBucketCount: true,
+        },
       },
       meta: { dataStatus: "available", timezone: "UTC" },
     });
+  });
+
+  it("does not invent a nonexistent hourly bucket during DST spring-forward", async () => {
+    const currentStart = Date.parse("2026-03-08T05:00:00.000Z");
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/metrics/expanded")) return json([]);
+      if (url.pathname.endsWith("/pageviews")) {
+        const isCurrent = Number(url.searchParams.get("startAt")) >= currentStart;
+        return json({
+          pageviews: (isCurrent ? ["00", "01", "03", "04"] : ["00", "01", "02", "03"]).map(
+            (hour, index) => ({
+              x: `${isCurrent ? "2026-03-08" : "2026-03-01"} ${hour}:00:00`,
+              y: 100 + index,
+            }),
+          ),
+          sessions: [],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "compare_traffic_series",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-03-08T05:00:00.000Z",
+        end: "2026-03-08T08:59:59.999Z",
+        comparisonMode: "custom",
+        comparisonStart: "2026-03-01T05:00:00.000Z",
+        comparisonEnd: "2026-03-01T08:59:59.999Z",
+        unit: "hour",
+        timezone: "America/New_York",
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        buckets: [
+          { current: { x: "2026-03-08 00" }, comparison: { x: "2026-03-01 00" } },
+          { current: { x: "2026-03-08 01" }, comparison: { x: "2026-03-01 01" } },
+          { current: { x: "2026-03-08 03" }, comparison: { x: "2026-03-01 02" } },
+          { current: { x: "2026-03-08 04" }, comparison: { x: "2026-03-01 03" } },
+        ],
+        dataQuality: {
+          sparseBucketsFilled: true,
+          currentBucketCount: 4,
+          comparisonBucketCount: 4,
+          equalBucketCount: true,
+        },
+      },
+    });
+    expect(JSON.stringify(result.structuredContent)).not.toContain("2026-03-08 02");
+  });
+
+  it("omits shifted deltas when DST fall-back produces unequal local bucket counts", async () => {
+    const currentStart = Date.parse("2026-11-01T04:00:00.000Z");
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/metrics/expanded")) return json([]);
+      if (url.pathname.endsWith("/pageviews")) {
+        const isCurrent = Number(url.searchParams.get("startAt")) >= currentStart;
+        const pageviews = Array.from({ length: 24 }, (_, hour) => ({
+          x: `${isCurrent ? "2026-11-01" : "2026-10-25"} ${String(hour).padStart(2, "0")}:00:00`,
+          y: 100 + hour,
+        }));
+        if (!isCurrent) pageviews.push({ x: "2026-10-26 00:00:00", y: 124 });
+        return json({ pageviews, sessions: [] });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "compare_traffic_series",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-11-01T04:00:00.000Z",
+        end: "2026-11-02T04:59:59.999Z",
+        comparisonMode: "custom",
+        comparisonStart: "2026-10-25T04:00:00.000Z",
+        comparisonEnd: "2026-10-26T04:59:59.999Z",
+        unit: "hour",
+        timezone: "America/New_York",
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        buckets: [],
+        dataQuality: {
+          currentBucketCount: 24,
+          comparisonBucketCount: 25,
+          equalBucketCount: false,
+          alignedChangesAvailable: false,
+          alignmentIssue: expect.stringContaining("aligned deltas are omitted"),
+        },
+      },
+    });
+  });
+
+  it("fails closed when sparse-series human exclusions would join match=any", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        return json([
+          {
+            name: "xpwesthmfqphh.com",
+            pageviews: 10,
+            visitors: 10,
+            visits: 10,
+            bounces: 10,
+            totaltime: 0,
+          },
+        ]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "compare_traffic_series",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-03",
+        filters: { match: "any", path: "/landing" },
+        trafficSegment: "human",
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("mandatory spam exclusions");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed on malformed expanded channel rows", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        if (url.searchParams.get("type") === "referrer") return json([]);
+        return json([
+          {
+            name: "direct",
+            pageviews: 10,
+            visitors: 8,
+            visits: 9,
+            bounces: 1,
+          },
+        ]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "explain_traffic_change",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        dimensions: ["channel"],
+        filters: { channel: "direct" },
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("invalid expanded metric data");
   });
 
   it("compares equal release windows and reports mixed traffic and performance evidence", async () => {
@@ -683,6 +912,145 @@ describe("Umami Compass insights", () => {
         },
       },
       meta: { websiteId: WEBSITE_ID, timezone: "UTC" },
+    });
+  });
+
+  it("excludes unscoped Web Vitals from a channel-specific release verdict", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-13T12:00:00.000Z");
+    const releaseAt = "2026-07-01T00:00:00.000Z";
+    const releaseTime = Date.parse(releaseAt);
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        if (url.searchParams.get("type") === "referrer") return json([]);
+        const current = Number(url.searchParams.get("startAt")) >= releaseTime;
+        return json([
+          {
+            name: "direct",
+            pageviews: current ? 800 : 600,
+            visitors: current ? 600 : 450,
+            visits: current ? 700 : 500,
+            bounces: 100,
+            totaltime: 10_000,
+          },
+        ]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_release_impact",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        releaseAt,
+        windowDays: 7,
+        dimensions: ["channel"],
+        filters: { channel: "direct" },
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        traffic: {
+          scope: { channel: "direct" },
+          current: { pageviews: 800 },
+          comparison: { pageviews: 600 },
+        },
+        assessment: {
+          verdict: "traffic_change_only",
+          performanceRegressions: [],
+          performanceImprovements: [],
+          performanceScopeComparable: false,
+          confidence: "low",
+        },
+        performance: {
+          status: "scope_mismatch",
+          scope: { requestedChannel: "direct", performanceChannel: "all" },
+        },
+      },
+    });
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        requestUrl(input).pathname.endsWith("/reports/performance"),
+      ),
+    ).toBe(false);
+  });
+
+  it("applies human-traffic exclusions to both release traffic and performance", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-13T12:00:00.000Z");
+    const releaseAt = "2026-07-01T00:00:00.000Z";
+    const releaseTime = Date.parse(releaseAt);
+    const fetchMock = vi.fn<Fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        return json([
+          {
+            name: "xpwesthmfqphh.com",
+            pageviews: 100,
+            visitors: 100,
+            visits: 100,
+            bounces: 98,
+            totaltime: 0,
+          },
+        ]);
+      }
+      if (url.pathname.endsWith("/stats")) {
+        expect(url.searchParams.get("domain1")).toBe("neq.xpwesthmfqphh.com");
+        return json(
+          plainTotals(Number(url.searchParams.get("startAt")) >= releaseTime ? 800 : 600),
+        );
+      }
+      if (url.pathname.endsWith("/metrics")) {
+        expect(url.searchParams.get("domain1")).toBe("neq.xpwesthmfqphh.com");
+        return json([]);
+      }
+      if (url.pathname.endsWith("/reports/performance")) {
+        const body = JSON.parse(String(init?.body)) as { filters: Record<string, unknown> };
+        expect(body.filters.domain1).toBe("neq.xpwesthmfqphh.com");
+        return json(performanceSummary(2_000));
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_release_impact",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        releaseAt,
+        windowDays: 7,
+        dimensions: ["path"],
+        trafficSegment: "human",
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        traffic: {
+          scope: {
+            channel: "all",
+            excludedReferrers: ["xpwesthmfqphh.com"],
+          },
+        },
+        performance: {
+          status: "available",
+          scope: {
+            channel: "all",
+            excludedReferrers: ["xpwesthmfqphh.com"],
+          },
+        },
+      },
     });
   });
 

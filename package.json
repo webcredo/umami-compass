@@ -1,6 +1,6 @@
 {
   "name": "umami-compass",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A secure, read-only MCP server for Umami Analytics 3.2+ — Cloud and self-hosted",
   "license": "MIT",
   "author": "webcredo",

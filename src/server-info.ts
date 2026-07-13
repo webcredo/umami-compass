@@ -2,6 +2,8 @@ import type { UmamiCompassConfig } from "./config.js";
 import { VERSION } from "./version.js";
 
 export function getServerInfo(config: UmamiCompassConfig) {
+  const insightsEnabled = config.toolsets.has("insights");
+  const reportsEnabled = config.toolsets.has("reports");
   return {
     name: "umami-compass",
     version: VERSION,
@@ -25,11 +27,12 @@ export function getServerInfo(config: UmamiCompassConfig) {
     },
     capabilities: {
       structuredFilterOperators: true,
-      directTrafficIsolation: true,
-      derivedChannelBreakdowns: true,
-      referralSpamHeuristics: true,
-      humanTrafficPreset: true,
-      periodSeriesComparison: config.toolsets.has("insights"),
+      emptyReferrerIsolation: true,
+      directTrafficIsolation: insightsEnabled || reportsEnabled,
+      derivedChannelBreakdowns: insightsEnabled || reportsEnabled,
+      referralSpamHeuristics: insightsEnabled || reportsEnabled,
+      humanTrafficPreset: insightsEnabled || reportsEnabled,
+      periodSeriesComparison: insightsEnabled,
     },
   };
 }
