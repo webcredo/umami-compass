@@ -7,6 +7,7 @@
 [![CI](https://github.com/webcredo/umami-compass/actions/workflows/ci.yml/badge.svg)](https://github.com/webcredo/umami-compass/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/umami-compass?logo=npm&color=CB3837)](https://www.npmjs.com/package/umami-compass)
 [![license](https://img.shields.io/github/license/webcredo/umami-compass)](LICENSE)
+[![Support Umami Compass on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P5Z8234QNW)
 
 **Distribution:** [`umami-compass` on npm](https://www.npmjs.com/package/umami-compass) · [`io.github.webcredo/umami-compass` in the official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.webcredo%2Fumami-compass)
 
@@ -316,6 +317,12 @@ To add an endpoint, follow [Adding a tool](docs/adding-a-tool.md). For project e
 Analytics, session metadata, revenue, and replay metadata can be sensitive. Use least-privilege credentials, an allowlist, the smallest toolset, and short time ranges. Read [SECURITY.md](SECURITY.md) before production use.
 
 Umami Compass is an independent community project and is not affiliated with Umami Software.
+
+## Support the project
+
+Umami Compass is free and open source. If it saves you time or improves your analytics workflow, a small contribution on Ko-fi is a simple way to support the project.
+
+[![Support Umami Compass on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P5Z8234QNW)
 
 ## License
 
