@@ -7,7 +7,7 @@
 [![CI](https://github.com/webcredo/umami-compass/actions/workflows/ci.yml/badge.svg)](https://github.com/webcredo/umami-compass/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/umami-compass?logo=npm&color=CB3837)](https://www.npmjs.com/package/umami-compass)
 [![license](https://img.shields.io/github/license/webcredo/umami-compass)](LICENSE)
-[![Support Umami Compass on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P5Z8234QNW)
+[![Buy me a coffee on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P5Z8234QNW)
 
 **Distribution:** [`umami-compass` on npm](https://www.npmjs.com/package/umami-compass) · [`io.github.webcredo/umami-compass` in the official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.webcredo%2Fumami-compass)
 
@@ -320,9 +320,9 @@ Umami Compass is an independent community project and is not affiliated with Uma
 
 ## Support the project
 
-Umami Compass is free and open source. If it saves you time or improves your analytics workflow, a small contribution on Ko-fi is a simple way to support the project.
+Umami Compass is free and open source. If it saves you time or improves your analytics workflow, you can support the project by buying me a coffee on Ko-fi.
 
-[![Support Umami Compass on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P5Z8234QNW)
+[![Buy me a coffee on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P5Z8234QNW)
 
 ## License
 
