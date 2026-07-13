@@ -9,6 +9,10 @@ import { createServer } from "../src/server.js";
 const WEBSITE_ID = "6b2c8c10-908c-4a8e-a924-4049eb3bde8c";
 const connected: Array<{ client: Client; server: ReturnType<typeof createServer> }> = [];
 
+function requestUrl(input: Parameters<Fetch>[0]): URL {
+  return new URL(input instanceof Request ? input.url : input.toString());
+}
+
 afterEach(async () => {
   await Promise.all(
     connected.splice(0).map(({ client, server }) => Promise.all([client.close(), server.close()])),
@@ -34,6 +38,7 @@ describe("Umami Compass MCP server", () => {
     const result = await client.listTools();
 
     expect(result.tools.map(({ name }) => name)).toEqual([
+      "get_server_info",
       "list_websites",
       "get_website",
       "get_website_stats",
@@ -58,7 +63,7 @@ describe("Umami Compass MCP server", () => {
     const client = await connect(vi.fn<Fetch>(), "all");
     const result = await client.listTools();
 
-    expect(result.tools).toHaveLength(35);
+    expect(result.tools).toHaveLength(37);
     expect(result.tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
     expect(
       result.tools.some((tool) => /^(create|update|delete|reset|share|save|send)_/.test(tool.name)),
@@ -97,9 +102,31 @@ describe("Umami Compass MCP server", () => {
       enabledToolsets?: string[];
       version?: string;
     };
-    expect(capabilityData.version).toBe("0.2.0");
+    expect(capabilityData.version).toBe("0.3.0");
     expect(capabilityData.enabledToolsets).toEqual(["core", "insights"]);
     expect(JSON.stringify(capabilities.contents)).not.toContain("test-key");
+  });
+
+  it("returns local server version and feature capabilities without an upstream request", async () => {
+    const fetchMock = vi.fn<Fetch>();
+    const client = await connect(fetchMock, "core");
+
+    const result = await client.callTool({ name: "get_server_info", arguments: {} });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        name: "umami-compass",
+        version: "0.3.0",
+        access: "read-only",
+        capabilities: {
+          directTrafficIsolation: true,
+          derivedChannelBreakdowns: true,
+          humanTrafficPreset: true,
+        },
+      },
+      meta: { dataStatus: "available" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("publishes only prompts whose required toolsets are enabled", async () => {
@@ -150,6 +177,46 @@ describe("Umami Compass MCP server", () => {
         sessions: [{ x: "2026-07-01", y: 11 }],
       },
     });
+  });
+
+  it("serializes direct and exclusion filters with neutral referrer semantics", async () => {
+    const requests: string[] = [];
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      requests.push(String(input));
+      const url = requestUrl(input);
+      requests.push(url.href);
+      expect(url.searchParams.get("domain1")).toBe("eq.");
+      expect(url.searchParams.get("path")).toBe("neq./admin,/internal");
+      return Response.json({
+        pageviews: 10,
+        visitors: 8,
+        visits: 9,
+        bounces: 2,
+        totaltime: 30,
+      });
+    });
+    const client = await connect(fetchMock, "core");
+
+    for (const referrer of ["", { operator: "is_empty" }]) {
+      const result = await client.callTool({
+        name: "get_website_stats",
+        arguments: {
+          websiteId: WEBSITE_ID,
+          start: "2026-07-01",
+          end: "2026-07-02",
+          filters: {
+            referrer,
+            path: { operator: "not_equals", value: ["/admin", "/internal"] },
+          },
+        },
+      });
+
+      expect(
+        result.isError,
+        `${JSON.stringify(result)} calls=${fetchMock.mock.calls.length} ${JSON.stringify(requests)}`,
+      ).not.toBe(true);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("fails closed when Umami drifts from the pageview contract", async () => {
@@ -697,7 +764,7 @@ describe("Umami Compass MCP server", () => {
 
   it("normalizes breakdown aggregate strings", async () => {
     const client = await connect(
-      vi.fn<Fetch>().mockResolvedValue(
+      vi.fn<Fetch>().mockImplementation(async () =>
         Response.json([
           {
             path: "/",
@@ -734,6 +801,116 @@ describe("Umami Compass MCP server", () => {
             totaltime: 900000,
           },
         ],
+      },
+    });
+  });
+
+  it("derives an exact bounded channel by device breakdown", async () => {
+    const requests: string[] = [];
+    const fetchMock = vi.fn<Fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      requests.push(`${init?.method ?? "GET"} ${url.href} ${String(init?.body ?? "")}`);
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        if (url.searchParams.get("type") === "referrer") return Response.json([]);
+        const device = url.searchParams.get("device");
+        return Response.json([
+          {
+            name: "direct",
+            pageviews: device === "eq.mobile" ? 40 : 20,
+            visitors: device === "eq.mobile" ? 30 : 15,
+            visits: device === "eq.mobile" ? 35 : 18,
+            bounces: 5,
+            totaltime: 200,
+          },
+        ]);
+      }
+      if (url.pathname.endsWith("/reports/breakdown")) {
+        const body = JSON.parse(String(init?.body)) as { parameters: { fields: string[] } };
+        expect(body.parameters.fields).toEqual(["device"]);
+        return Response.json([{ device: "mobile" }, { device: "desktop" }]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock, "reports");
+
+    const result = await client.callTool({
+      name: "run_breakdown_report",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        fields: ["channel", "device"],
+        filters: { channel: "direct" },
+      },
+    });
+
+    expect(
+      result.isError,
+      `${JSON.stringify(result)} calls=${fetchMock.mock.calls.length} ${JSON.stringify(requests)}`,
+    ).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        items: [
+          { channel: "direct", device: "mobile", visitors: 30 },
+          { channel: "direct", device: "desktop", visitors: 15 },
+        ],
+        dataQuality: { derivedChannelBreakdown: true, fanoutRequests: 2 },
+      },
+      meta: { truncated: false },
+    });
+  });
+
+  it("applies the human traffic preset with explicit referral exclusions", async () => {
+    const requests: string[] = [];
+    const fetchMock = vi.fn<Fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      requests.push(`${init?.method ?? "GET"} ${url.href} ${String(init?.body ?? "")}`);
+      if (url.pathname.endsWith("/metrics/expanded")) {
+        return Response.json([
+          {
+            name: "xpwesthmfqphh.com",
+            pageviews: 100,
+            visitors: 100,
+            visits: 100,
+            bounces: 98,
+            totaltime: 0,
+          },
+        ]);
+      }
+      if (url.pathname.endsWith("/reports/breakdown")) {
+        const body = JSON.parse(String(init?.body)) as { filters: Record<string, unknown> };
+        expect(body.filters.domain1).toBe("neq.xpwesthmfqphh.com");
+        return Response.json([{ path: "/", views: 50, visitors: 40, visits: 45 }]);
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock, "reports");
+
+    const result = await client.callTool({
+      name: "run_breakdown_report",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        fields: ["path"],
+        trafficSegment: "human",
+      },
+    });
+
+    expect(
+      result.isError,
+      `${JSON.stringify(result)} calls=${fetchMock.mock.calls.length} ${JSON.stringify(requests)}`,
+    ).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        trafficSegment: "human",
+        excludedReferrers: ["xpwesthmfqphh.com"],
+        trafficQuality: {
+          status: "available",
+          suspiciousReferrers: [
+            { name: "xpwesthmfqphh.com", confidence: "high", bounceRatePercent: 98 },
+          ],
+        },
       },
     });
   });

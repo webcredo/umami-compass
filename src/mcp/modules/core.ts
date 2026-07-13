@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { getServerInfo } from "../../server-info.js";
 import { READ_ONLY_ANNOTATIONS, runTool } from "../result.js";
 import {
   arrayOutputSchema,
@@ -47,6 +48,19 @@ export const coreModule: ToolModule = {
   id: "core",
   access: "read",
   register(server, { client, config }) {
+    server.registerTool(
+      "get_server_info",
+      {
+        title: "Get Umami Compass server information",
+        description:
+          "Get the local package version, enabled toolsets, safety limits, and supported analysis capabilities without exposing credentials.",
+        inputSchema: {},
+        outputSchema: recordOutputSchema,
+        annotations: READ_ONLY_ANNOTATIONS,
+      },
+      () => runTool(async () => getServerInfo(config)),
+    );
+
     server.registerTool(
       "list_websites",
       {

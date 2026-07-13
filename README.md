@@ -13,7 +13,7 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.2.0` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.3.0` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
 > The `npx` examples follow the stable npm release channel and check it whenever the MCP process starts. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 
@@ -43,7 +43,7 @@ npx --yes --prefer-online umami-compass@latest
 
 `@latest` selects the stable npm channel and `--prefer-online` makes npm check the registry even when package metadata is cached. npm still reuses the cached package when that exact release is already present. Updates take effect the next time the MCP process starts; an already running local server cannot replace itself.
 
-Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.2.0`. Never use the preview channel for an unattended production setup.
+Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.3.0`. Never use the preview channel for an unattended production setup.
 
 ### Umami Cloud
 
@@ -92,12 +92,12 @@ Do not commit real credentials. Prefer a dedicated view-only Umami account and t
 
 ## Tools
 
-The least-privilege default enables `core,insights`: seven primitive aggregate tools plus five decision-ready aggregate workflows. Row-level events, sessions, replay, heatmaps, and other more sensitive modules remain opt-in.
+The least-privilege default enables `core,insights`: eight primitive aggregate tools plus six decision-ready aggregate workflows. Row-level events, sessions, replay, heatmaps, and other more sensitive modules remain opt-in.
 
 | Toolset | Tools | Default |
 | --- | --- | --- |
-| `core` | `list_websites`, `get_website`, `get_website_stats`, `get_pageviews`, `get_metrics`, `get_active_visitors`, `get_website_date_range` | Yes |
-| `insights` | `resolve_website`, `get_portfolio_overview`, `explain_traffic_change`, `analyze_release_impact`, `tracking_health_check` | Yes |
+| `core` | `get_server_info`, `list_websites`, `get_website`, `get_website_stats`, `get_pageviews`, `get_metrics`, `get_active_visitors`, `get_website_date_range` | Yes |
+| `insights` | `resolve_website`, `get_portfolio_overview`, `explain_traffic_change`, `compare_traffic_series`, `analyze_release_impact`, `tracking_health_check` | Yes |
 | `events` | `list_events`, `get_event_stats`, `get_event_series` | No |
 | `sessions` | `list_sessions`, `get_session_stats`, `get_session`, `get_session_activity` | No |
 | `performance` | `get_web_vitals`, `get_performance_breakdown` for LCP, INP, CLS, FCP, and TTFB | No |
@@ -106,11 +106,30 @@ The least-privilege default enables `core,insights`: seven primitive aggregate t
 | `replay` | `list_replays` (metadata only; never raw rrweb payloads) | No |
 | `heatmaps` | `get_heatmap` (click/scroll pages and bounded detail points) | No |
 
-Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has 12 aggregate tools; `all` has 35. Multi-website insights are bounded to 50 websites with four concurrent website workers. High-cardinality report, performance, heatmap, and activity results carry explicit limits and truncation metadata.
+Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has 14 aggregate tools; `all` has 37. Multi-website insights are bounded to 50 websites with four concurrent website workers. High-cardinality report, performance, heatmap, channel fan-out, and activity results carry explicit limits and truncation metadata.
 
 Successful tool responses preserve the existing `data` field and add a common `meta` envelope. Depending on the request it includes `dataStatus`, `emptyReason`, `websiteId`, `requestedRange`, `timezone`, and `truncated`, allowing clients to distinguish a valid empty range from a disabled feature or a truncated result.
 
-The server exposes `umami://websites` and the sanitized `umami://capabilities` resource. Guided prompts cover an analytics report, weekly portfolio briefing, traffic investigation, release impact, tracking health, and conversion audit; each prompt is registered only when its required toolset is enabled. Scheduling a recurring briefing remains the MCP client's responsibility; the local stdio server does not run a background scheduler or send messages.
+The server exposes `umami://websites` and the sanitized `umami://capabilities` resource. `get_server_info` returns the same local version, enabled toolsets, limits, and feature flags as a tool. Guided prompts cover an analytics report, weekly portfolio briefing, traffic investigation, release impact, tracking health, and conversion audit; each prompt is registered only when its required toolset is enabled. Scheduling a recurring briefing remains the MCP client's responsibility; the local stdio server does not run a background scheduler or send messages.
+
+### Filters, direct traffic, channels, and traffic quality
+
+Plain string filters remain compatible. Structured filters add `equals`, `not_equals`, `contains`, `not_contains`, `regex`, `not_regex`, `is_empty`, and `is_not_empty`. Equality operators accept an array for native `IN` or `NOT IN` behavior:
+
+```json
+{
+  "filters": {
+    "referrer": { "operator": "is_empty" },
+    "path": { "operator": "not_equals", "value": ["/admin", "/internal"] }
+  }
+}
+```
+
+For compatibility, `{"referrer": ""}` also isolates direct rows. Compass uses Umami's neutral referrer-domain column for structured and empty referrer filters so direct/internal traffic is not accidentally removed by Umami's external-referrer behavior.
+
+`explain_traffic_change`, `analyze_release_impact`, and `run_breakdown_report` accept `filters.channel`, including `direct`. `run_breakdown_report` also accepts `channel` as a field, so requests such as `channel × device` work. Umami 3.2 does not natively expose channel as a filter or breakdown field; Compass derives these results through bounded expanded-metric fan-out and reports candidate coverage, omitted rows, request count, and truncation under `dataQuality`.
+
+Traffic-change, release-impact, comparison-series, and breakdown results conservatively flag referral-spam candidates using the combined pattern of a generated-looking domain, very high bounce rate, near-zero visit duration, and minimum traffic. Set `trafficSegment` to `human` to exclude only those candidates with native negative filters. The preset fails closed when both periods cannot be assessed. Findings remain heuristics, not a definitive bot classification, and include their evidence and thresholds.
 
 ## Configuration
 

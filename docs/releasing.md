@@ -31,7 +31,7 @@ CI installs the official `mcp-publisher` v1.7.9 binary with a pinned SHA-256 dig
 ## Release channels and client updates
 
 - A regular semantic version is published under npm `latest` and becomes the default auto-updating stable release.
-- A semantic prerelease such as `0.2.0-rc.1` is published under npm `next` and creates a prerelease on GitHub.
+- A semantic prerelease such as `0.3.0-rc.1` is published under npm `next` and creates a prerelease on GitHub.
 - End-user stdio configs use `npx --yes --prefer-online umami-compass@latest`, so npm checks the stable channel whenever the MCP process starts.
 - Reproducible CI and managed environments should use an exact package version without `--prefer-online`.
 

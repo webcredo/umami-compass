@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { UmamiError } from "../../api/errors.js";
+import { toSafeError, UmamiError } from "../../api/errors.js";
 import type {
   AttributionReportRequest,
   BreakdownField,
@@ -10,6 +10,7 @@ import type {
   RetentionReportRequest,
   UtmReportRequest,
 } from "../../api/types.js";
+import { parseTimeRange } from "../../time.js";
 import {
   boundedItems,
   boundedPageItems,
@@ -20,6 +21,7 @@ import {
 } from "../report-utils.js";
 import { READ_ONLY_ANNOTATIONS, runTool } from "../result.js";
 import {
+  appendReferrerExclusions,
   boundedItemsOutputSchema,
   filtersSchema,
   outputSchema,
@@ -27,11 +29,19 @@ import {
   pageSchema,
   pageSizeSchema,
   recordOutputSchema,
+  segmentedFiltersSchema,
+  serializeFilters,
   timeSchema,
   timezoneSchema,
+  trafficSegmentSchema,
   uuidSchema,
 } from "../schemas.js";
 import type { ToolModule } from "../tool-module.js";
+import {
+  assessReferralSpam,
+  runDerivedChannelBreakdown,
+  type TrafficChannel,
+} from "../traffic-segmentation.js";
 
 const reportTypeSchema = z.enum([
   "attribution",
@@ -47,6 +57,7 @@ const reportTypeSchema = z.enum([
 ]);
 
 const breakdownFieldSchema = z.enum([
+  "channel",
   "path",
   "referrer",
   "title",
@@ -421,7 +432,7 @@ export const reportsModule: ToolModule = {
       {
         title: "Run a multi-field breakdown",
         description:
-          "Cross-tabulate up to three Umami dimensions and return the highest-ranked bounded rows.",
+          "Cross-tabulate up to three Umami dimensions, including derived channel combinations, and return the highest-ranked bounded rows.",
         inputSchema: {
           websiteId: uuidSchema,
           start: timeSchema,
@@ -432,22 +443,83 @@ export const reportsModule: ToolModule = {
             .max(3)
             .refine((items) => new Set(items).size === items.length, "fields must be unique"),
           limit: z.number().int().min(1).max(100).default(20),
-          filters: filtersSchema.optional(),
+          filters: segmentedFiltersSchema.optional(),
+          trafficSegment: trafficSegmentSchema,
         },
         outputSchema: boundedItemsOutputSchema,
         annotations: READ_ONLY_ANNOTATIONS,
       },
-      ({ websiteId, start, end, fields, limit, filters }, extra) =>
+      ({ websiteId, start, end, fields, limit, filters, trafficSegment }, extra) =>
         runTool(
           async () => {
-            const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
+            const period = parseTimeRange(start, end, config.maxRangeDays);
+            const { channel, ...analyticsFilters } = filters ?? {};
+            let trafficQuality:
+              | ({ status: "available" } & Awaited<ReturnType<typeof assessReferralSpam>>)
+              | { status: "unavailable"; error: unknown };
+            try {
+              trafficQuality = {
+                status: "available",
+                ...(await assessReferralSpam(client, {
+                  websiteId,
+                  period,
+                  filters: serializeFilters(analyticsFilters),
+                  maxRangeDays: config.maxRangeDays,
+                  signal: extra.signal,
+                })),
+              };
+            } catch (error) {
+              if (trafficSegment === "human") throw error;
+              trafficQuality = { status: "unavailable", error: toSafeError(error) };
+            }
+            const excludedReferrers =
+              trafficSegment === "human" && trafficQuality.status === "available"
+                ? trafficQuality.excludedReferrers
+                : [];
+            const serializedFilters = appendReferrerExclusions(
+              serializeFilters(analyticsFilters),
+              excludedReferrers,
+            );
+
+            if (channel !== undefined || fields.includes("channel")) {
+              const derived = await runDerivedChannelBreakdown(client, {
+                websiteId,
+                period,
+                fields: fields as Array<BreakdownField | "channel">,
+                channel: channel as TrafficChannel | undefined,
+                filters: serializedFilters,
+                limit,
+                maxRangeDays: config.maxRangeDays,
+                signal: extra.signal,
+              });
+              return {
+                ...boundedItems(derived.rows, limit),
+                dataQuality: derived.dataQuality,
+                trafficSegment,
+                trafficQuality,
+                excludedReferrers,
+              };
+            }
+
+            const common = commonRequest(
+              websiteId,
+              start,
+              end,
+              config.maxRangeDays,
+              analyticsFilters,
+            );
             const request: BreakdownReportRequest = {
               websiteId,
               type: "breakdown",
               parameters: { ...common.dates, fields: fields as BreakdownField[] },
-              filters: common.filters,
+              filters: serializedFilters,
             };
-            return boundedItems(await client.runReport(request, extra.signal), limit);
+            return {
+              ...boundedItems(await client.runReport(request, extra.signal), limit),
+              trafficSegment,
+              trafficQuality,
+              excludedReferrers,
+            };
           },
           { websiteId, range: { start, end } },
         ),

@@ -15,7 +15,14 @@ The roadmap describes direction, not a compatibility promise. Proposals should b
 - Tracking health checks across traffic freshness, domains, events, recorder configuration, and permissions.
 - Website resolution, common result metadata, team allowlists, capability discovery, and guided prompts.
 
-## 0.3 — deeper analysis
+## 0.3 — traffic segmentation and quality
+
+- Structured positive, negative, regex, and empty-value filter operators.
+- Direct and channel isolation with bounded channel cross-tabs.
+- Conservative referral-spam evidence and an opt-in human-traffic preset.
+- Period-aligned traffic series comparison and local server capability discovery.
+
+## 0.4 — deeper analysis
 
 - Event and session property reports with bounded cardinality.
 - Revenue chart/session reports.
@@ -23,7 +30,7 @@ The roadmap describes direction, not a compatibility promise. Proposals should b
 - Saved replay metadata where public API stability permits.
 - Capability discovery for differences between Cloud and self-hosted releases.
 
-## 0.4 — remote deployment profile
+## 0.5 — remote deployment profile
 
 - Streamable HTTP only with MCP-compliant OAuth 2.1 resource-server behavior.
 - Tenant isolation, rate limits, audit logs, deployment health checks, and observability without secrets.
