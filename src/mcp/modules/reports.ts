@@ -110,14 +110,17 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, type, page, pageSize }, extra) =>
-        runTool(() => {
-          client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/reports`,
-            { type, page, pageSize },
-            extra.signal,
-          );
-        }),
+        runTool(
+          () => {
+            client.assertWebsiteAllowed(websiteId);
+            return client.get(
+              `websites/${encodeURIComponent(websiteId)}/reports`,
+              { type, page, pageSize },
+              extra.signal,
+            );
+          },
+          { websiteId },
+        ),
     );
 
     server.registerTool(
@@ -131,19 +134,25 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, reportId }, extra) =>
-        runTool(async () => {
-          client.assertWebsiteAllowed(websiteId);
-          const report = requireRecord(
-            await client.get(`reports/${encodeURIComponent(reportId)}`, undefined, extra.signal),
-          );
-          if (
-            typeof report.websiteId !== "string" ||
-            report.websiteId.toLowerCase() !== websiteId
-          ) {
-            throw new UmamiError("FORBIDDEN", "The saved report does not belong to that website.");
-          }
-          return report;
-        }),
+        runTool(
+          async () => {
+            await client.assertWebsiteAccessible(websiteId, extra.signal);
+            const report = requireRecord(
+              await client.get(`reports/${encodeURIComponent(reportId)}`, undefined, extra.signal),
+            );
+            if (
+              typeof report.websiteId !== "string" ||
+              report.websiteId.toLowerCase() !== websiteId
+            ) {
+              throw new UmamiError(
+                "FORBIDDEN",
+                "The saved report does not belong to that website.",
+              );
+            }
+            return report;
+          },
+          { websiteId },
+        ),
     );
 
     server.registerTool(
@@ -162,15 +171,18 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, type, search, limit }, extra) =>
-        runTool(async () => {
-          client.assertWebsiteAllowed(websiteId);
-          const result = await client.get(
-            `websites/${encodeURIComponent(websiteId)}/segments`,
-            { type, search },
-            extra.signal,
-          );
-          return { type, ...boundedPageItems(result, limit) };
-        }),
+        runTool(
+          async () => {
+            client.assertWebsiteAllowed(websiteId);
+            const result = await client.get(
+              `websites/${encodeURIComponent(websiteId)}/segments`,
+              { type, search },
+              extra.signal,
+            );
+            return { type, ...boundedPageItems(result, limit) };
+          },
+          { websiteId },
+        ),
     );
 
     server.registerTool(
@@ -190,16 +202,19 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, type, value, filters }, extra) =>
-        runTool(() => {
-          const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
-          const request: GoalReportRequest = {
-            websiteId,
-            type: "goal",
-            parameters: { ...common.dates, type, value },
-            filters: common.filters,
-          };
-          return client.runReport(request, extra.signal);
-        }),
+        runTool(
+          () => {
+            const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
+            const request: GoalReportRequest = {
+              websiteId,
+              type: "goal",
+              parameters: { ...common.dates, type, value },
+              filters: common.filters,
+            };
+            return client.runReport(request, extra.signal);
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -238,16 +253,19 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, windowMinutes, steps, filters }, extra) =>
-        runTool(() => {
-          const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
-          const request: FunnelReportRequest = {
-            websiteId,
-            type: "funnel",
-            parameters: { ...common.dates, window: windowMinutes, steps },
-            filters: common.filters,
-          };
-          return client.runReport(request, extra.signal);
-        }),
+        runTool(
+          () => {
+            const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
+            const request: FunnelReportRequest = {
+              websiteId,
+              type: "funnel",
+              parameters: { ...common.dates, window: windowMinutes, steps },
+              filters: common.filters,
+            };
+            return client.runReport(request, extra.signal);
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -271,22 +289,25 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, steps, startStep, endStep, eventType, limit, filters }, extra) =>
-        runTool(async () => {
-          const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
-          const request: JourneyReportRequest = {
-            websiteId,
-            type: "journey",
-            parameters: {
-              ...common.dates,
-              steps,
-              ...(startStep ? { startStep } : {}),
-              ...(endStep ? { endStep } : {}),
-              ...(eventType ? { eventType } : {}),
-            },
-            filters: common.filters,
-          };
-          return boundedItems(await client.runReport(request, extra.signal), limit);
-        }),
+        runTool(
+          async () => {
+            const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
+            const request: JourneyReportRequest = {
+              websiteId,
+              type: "journey",
+              parameters: {
+                ...common.dates,
+                steps,
+                ...(startStep ? { startStep } : {}),
+                ...(endStep ? { endStep } : {}),
+                ...(eventType ? { eventType } : {}),
+              },
+              filters: common.filters,
+            };
+            return boundedItems(await client.runReport(request, extra.signal), limit);
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -306,16 +327,19 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, timezone, limit, filters }, extra) =>
-        runTool(async () => {
-          const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
-          const request: RetentionReportRequest = {
-            websiteId,
-            type: "retention",
-            parameters: { ...common.dates, timezone },
-            filters: common.filters,
-          };
-          return boundedItems(await client.runReport(request, extra.signal), limit);
-        }),
+        runTool(
+          async () => {
+            const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
+            const request: RetentionReportRequest = {
+              websiteId,
+              type: "retention",
+              parameters: { ...common.dates, timezone },
+              filters: common.filters,
+            };
+            return boundedItems(await client.runReport(request, extra.signal), limit);
+          },
+          { websiteId, range: { start, end }, timezone },
+        ),
     );
 
     server.registerTool(
@@ -335,16 +359,19 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, limit, filters }, extra) =>
-        runTool(async () => {
-          const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
-          const request: UtmReportRequest = {
-            websiteId,
-            type: "utm",
-            parameters: common.dates,
-            filters: common.filters,
-          };
-          return boundTopLevelArrays(await client.runReport(request, extra.signal), limit);
-        }),
+        runTool(
+          async () => {
+            const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
+            const request: UtmReportRequest = {
+              websiteId,
+              type: "utm",
+              parameters: common.dates,
+              filters: common.filters,
+            };
+            return boundTopLevelArrays(await client.runReport(request, extra.signal), limit);
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -368,22 +395,25 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, model, type, step, currency, limit, filters }, extra) =>
-        runTool(async () => {
-          const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
-          const request: AttributionReportRequest = {
-            websiteId,
-            type: "attribution",
-            parameters: {
-              ...common.dates,
-              model,
-              type,
-              step,
-              ...(currency ? { currency } : {}),
-            },
-            filters: common.filters,
-          };
-          return boundTopLevelArrays(await client.runReport(request, extra.signal), limit);
-        }),
+        runTool(
+          async () => {
+            const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
+            const request: AttributionReportRequest = {
+              websiteId,
+              type: "attribution",
+              parameters: {
+                ...common.dates,
+                model,
+                type,
+                step,
+                ...(currency ? { currency } : {}),
+              },
+              filters: common.filters,
+            };
+            return boundTopLevelArrays(await client.runReport(request, extra.signal), limit);
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -408,16 +438,19 @@ export const reportsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, fields, limit, filters }, extra) =>
-        runTool(async () => {
-          const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
-          const request: BreakdownReportRequest = {
-            websiteId,
-            type: "breakdown",
-            parameters: { ...common.dates, fields: fields as BreakdownField[] },
-            filters: common.filters,
-          };
-          return boundedItems(await client.runReport(request, extra.signal), limit);
-        }),
+        runTool(
+          async () => {
+            const common = commonRequest(websiteId, start, end, config.maxRangeDays, filters);
+            const request: BreakdownReportRequest = {
+              websiteId,
+              type: "breakdown",
+              parameters: { ...common.dates, fields: fields as BreakdownField[] },
+              filters: common.filters,
+            };
+            return boundedItems(await client.runReport(request, extra.signal), limit);
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
   },
 };

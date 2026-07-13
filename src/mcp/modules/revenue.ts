@@ -37,17 +37,20 @@ export const revenueModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, currency, filters }, extra) =>
-        runTool(() => {
-          client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/revenue/stats`,
-            {
-              ...rangeQuery(start, end, config.maxRangeDays, { filters }),
-              currency,
-            },
-            extra.signal,
-          );
-        }),
+        runTool(
+          () => {
+            client.assertWebsiteAllowed(websiteId);
+            return client.get(
+              `websites/${encodeURIComponent(websiteId)}/revenue/stats`,
+              {
+                ...rangeQuery(start, end, config.maxRangeDays, { filters }),
+                currency,
+              },
+              extra.signal,
+            );
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -68,21 +71,24 @@ export const revenueModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, currency, type, limit, filters }, extra) =>
-        runTool(async () => {
-          client.assertWebsiteAllowed(websiteId);
-          return boundedItems(
-            await client.get(
-              `websites/${encodeURIComponent(websiteId)}/revenue/metrics`,
-              {
-                ...rangeQuery(start, end, config.maxRangeDays, { filters }),
-                currency,
-                type,
-              },
-              extra.signal,
-            ),
-            limit,
-          );
-        }),
+        runTool(
+          async () => {
+            client.assertWebsiteAllowed(websiteId);
+            return boundedItems(
+              await client.get(
+                `websites/${encodeURIComponent(websiteId)}/revenue/metrics`,
+                {
+                  ...rangeQuery(start, end, config.maxRangeDays, { filters }),
+                  currency,
+                  type,
+                },
+                extra.signal,
+              ),
+              limit,
+            );
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
   },
 };

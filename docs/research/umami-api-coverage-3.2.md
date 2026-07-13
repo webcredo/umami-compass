@@ -15,10 +15,11 @@ This matrix was checked against the tagged Umami [`v3.2.0`](https://github.com/u
 | Revenue | revenue stats and metrics | `revenue`, opt-in |
 | Replays | replay list metadata | `replay`, opt-in; raw rrweb event payloads excluded |
 | Heatmaps | `POST /reports/heatmap` | `heatmaps`, opt-in; click/scroll page discovery and at most 1,000 detail points |
+| Decision workflows | bounded combinations of websites, stats, metrics, daterange, events, recorder, and performance | `insights`, default; website resolution, portfolio, traffic-change, release-impact, and tracking-health results |
 
 ## Candidate read-only additions
 
-| Priority | Umami 3.2 area | Why it is not in 0.1 yet |
+| Priority | Umami 3.2 area | Why it is not in 0.2 yet |
 | --- | --- | --- |
 | P1 | Event-data property discovery, fields, values, stats, and typed pivots | High cardinality and heterogeneous values need purpose-built schemas, pagination, redaction guidance, and fixtures. |
 | P1 | Session-data properties, values, stats, and pivots | Can expose user-linked properties; needs stronger privacy controls than ordinary aggregates. |

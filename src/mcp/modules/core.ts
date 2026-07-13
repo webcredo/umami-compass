@@ -74,7 +74,8 @@ export const coreModule: ToolModule = {
         outputSchema: recordOutputSchema,
         annotations: READ_ONLY_ANNOTATIONS,
       },
-      ({ websiteId }, extra) => runTool(() => client.getWebsite(websiteId, extra.signal)),
+      ({ websiteId }, extra) =>
+        runTool(() => client.getWebsite(websiteId, extra.signal), { websiteId }),
     );
 
     server.registerTool(
@@ -93,14 +94,17 @@ export const coreModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, filters }, extra) =>
-        runTool(() => {
-          client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/stats`,
-            rangeQuery(start, end, config.maxRangeDays, { filters }),
-            extra.signal,
-          );
-        }),
+        runTool(
+          () => {
+            client.assertWebsiteAllowed(websiteId);
+            return client.get(
+              `websites/${encodeURIComponent(websiteId)}/stats`,
+              rangeQuery(start, end, config.maxRangeDays, { filters }),
+              extra.signal,
+            );
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -121,23 +125,26 @@ export const coreModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, timezone, unit, filters }, extra) =>
-        runTool(async () => {
-          client.assertWebsiteAllowed(websiteId);
-          return parseUpstream(
-            pageviewsDataSchema,
-            await client.get(
-              `websites/${encodeURIComponent(websiteId)}/pageviews`,
-              seriesRangeQuery(start, end, config.maxRangeDays, {
-                filters,
-                timezone,
-                unit,
-                seriesCount: 2,
-              }),
-              extra.signal,
-            ),
-            "pageview series",
-          );
-        }),
+        runTool(
+          async () => {
+            client.assertWebsiteAllowed(websiteId);
+            return parseUpstream(
+              pageviewsDataSchema,
+              await client.get(
+                `websites/${encodeURIComponent(websiteId)}/pageviews`,
+                seriesRangeQuery(start, end, config.maxRangeDays, {
+                  filters,
+                  timezone,
+                  unit,
+                  seriesCount: 2,
+                }),
+                extra.signal,
+              ),
+              "pageview series",
+            );
+          },
+          { websiteId, range: { start, end }, timezone },
+        ),
     );
 
     server.registerTool(
@@ -160,20 +167,23 @@ export const coreModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, type, limit, offset, search, filters }, extra) =>
-        runTool(() => {
-          client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/metrics`,
-            {
-              ...rangeQuery(start, end, config.maxRangeDays, { filters }),
-              type,
-              limit,
-              offset,
-              search,
-            },
-            extra.signal,
-          );
-        }),
+        runTool(
+          () => {
+            client.assertWebsiteAllowed(websiteId);
+            return client.get(
+              `websites/${encodeURIComponent(websiteId)}/metrics`,
+              {
+                ...rangeQuery(start, end, config.maxRangeDays, { filters }),
+                type,
+                limit,
+                offset,
+                search,
+              },
+              extra.signal,
+            );
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
 
     server.registerTool(
@@ -186,14 +196,17 @@ export const coreModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId }, extra) =>
-        runTool(() => {
-          client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/active`,
-            undefined,
-            extra.signal,
-          );
-        }),
+        runTool(
+          () => {
+            client.assertWebsiteAllowed(websiteId);
+            return client.get(
+              `websites/${encodeURIComponent(websiteId)}/active`,
+              undefined,
+              extra.signal,
+            );
+          },
+          { websiteId },
+        ),
     );
 
     server.registerTool(
@@ -206,14 +219,17 @@ export const coreModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId }, extra) =>
-        runTool(() => {
-          client.assertWebsiteAllowed(websiteId);
-          return client.get(
-            `websites/${encodeURIComponent(websiteId)}/daterange`,
-            undefined,
-            extra.signal,
-          );
-        }),
+        runTool(
+          () => {
+            client.assertWebsiteAllowed(websiteId);
+            return client.get(
+              `websites/${encodeURIComponent(websiteId)}/daterange`,
+              undefined,
+              extra.signal,
+            );
+          },
+          { websiteId },
+        ),
     );
   },
 };

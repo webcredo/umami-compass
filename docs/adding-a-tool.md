@@ -5,9 +5,9 @@ Use this checklist for a read-only Umami endpoint.
 1. Confirm the endpoint and query names against the tagged Umami source and public API documentation. Record the reference version in the pull request.
 2. Choose the existing module that owns the endpoint family. Propose a new toolset only when users need to enable/disable the family independently.
 3. Define strict, bounded Zod inputs. Reuse `uuidSchema`, `timeSchema`, `filtersSchema`, paging schemas, and `rangeQuery`.
-4. Call `client.assertWebsiteAllowed(websiteId)` before a GET request. Closed report requests enforce it inside `client.runReport`.
+4. Use a fixed `websites/{websiteId}/...` path so the client enforces both website and team allowlists centrally. For direct object paths such as `reports/{reportId}`, call and await `client.assertWebsiteAccessible(websiteId, extra.signal)` first. Closed report requests enforce the same policy inside `client.runReport`.
 5. Encode every path segment and pass `extra.signal` to the client.
-6. Wrap the handler with `runTool`, provide `outputSchema`, and use honest annotations.
+6. Wrap the handler with `runTool`, provide `outputSchema`, pass the applicable website/range/timezone metadata, and use honest annotations.
 7. Do not transform away upstream fields. If a normalized response is valuable, include both raw evidence and the normalization, and test both.
 8. Add client-level tests for the URL/headers and an MCP integration test for tool name, schema, annotations, structured output, and safe failure.
 9. Update README tool tables and `CHANGELOG.md`.
@@ -26,14 +26,15 @@ server.registerTool(
     annotations: READ_ONLY_ANNOTATIONS,
   },
   ({ websiteId, start, end }, extra) =>
-    runTool(() => {
-      client.assertWebsiteAllowed(websiteId);
-      return client.get(
-        `websites/${encodeURIComponent(websiteId)}/example`,
-        rangeQuery(start, end, config.maxRangeDays),
-        extra.signal,
-      );
-    }),
+    runTool(
+      () =>
+        client.get(
+          `websites/${encodeURIComponent(websiteId)}/example`,
+          rangeQuery(start, end, config.maxRangeDays),
+          extra.signal,
+        ),
+      { websiteId, range: { start, end } },
+    ),
 );
 ```
 

@@ -6,6 +6,7 @@ import {
   boundedItemsDataSchema,
   filtersSchema,
   parseUpstream,
+  resultMetaOutputSchema,
   seriesRangeQuery,
   timeSchema,
   timezoneSchema,
@@ -47,6 +48,7 @@ const webVitalsOutputSchema = {
       chart: boundedItemsDataSchema,
     })
     .passthrough(),
+  ...resultMetaOutputSchema,
 };
 
 const performanceBreakdownOutputSchema = {
@@ -58,6 +60,7 @@ const performanceBreakdownOutputSchema = {
       invalidItemsExcluded: z.number().int().nonnegative(),
     })
     .passthrough(),
+  ...resultMetaOutputSchema,
 };
 
 function finiteNumber(value: unknown): number | undefined {
@@ -142,28 +145,31 @@ export const performanceModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, metric, timezone, unit, maxPoints, filters }, extra) =>
-        runTool(async () => {
-          const request = makeRequest(
-            websiteId,
-            start,
-            end,
-            config.maxRangeDays,
-            metric,
-            timezone,
-            unit,
-            filters,
-          );
-          const report = parseUpstream(
-            performanceReportSchema,
-            await client.runReport(request, extra.signal),
-            "performance report",
-          );
-          return {
-            metric,
-            summary: report.summary,
-            chart: boundedItems(report.chart, maxPoints),
-          };
-        }),
+        runTool(
+          async () => {
+            const request = makeRequest(
+              websiteId,
+              start,
+              end,
+              config.maxRangeDays,
+              metric,
+              timezone,
+              unit,
+              filters,
+            );
+            const report = parseUpstream(
+              performanceReportSchema,
+              await client.runReport(request, extra.signal),
+              "performance report",
+            );
+            return {
+              metric,
+              summary: report.summary,
+              chart: boundedItems(report.chart, maxPoints),
+            };
+          },
+          { websiteId, range: { start, end }, timezone },
+        ),
     );
 
     server.registerTool(
@@ -187,29 +193,32 @@ export const performanceModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, metric, dimension, timezone, unit, limit, filters }, extra) =>
-        runTool(async () => {
-          const request = makeRequest(
-            websiteId,
-            start,
-            end,
-            config.maxRangeDays,
-            metric,
-            timezone,
-            unit,
-            filters,
-          );
-          const report = parseUpstream(
-            performanceReportSchema,
-            await client.runReport(request, extra.signal),
-            "performance report",
-          );
-          return {
-            metric,
-            dimension,
-            summary: report.summary,
-            ...rankPerformanceItems(report[dimensionKeys[dimension]], limit),
-          };
-        }),
+        runTool(
+          async () => {
+            const request = makeRequest(
+              websiteId,
+              start,
+              end,
+              config.maxRangeDays,
+              metric,
+              timezone,
+              unit,
+              filters,
+            );
+            const report = parseUpstream(
+              performanceReportSchema,
+              await client.runReport(request, extra.signal),
+              "performance report",
+            );
+            return {
+              metric,
+              dimension,
+              summary: report.summary,
+              ...rankPerformanceItems(report[dimensionKeys[dimension]], limit),
+            };
+          },
+          { websiteId, range: { start, end }, timezone },
+        ),
     );
   },
 };

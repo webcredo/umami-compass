@@ -12,7 +12,7 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.1.3` is the current patch release. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.2.0` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
 > The `npx` examples follow the stable npm release channel and check it whenever the MCP process starts. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 
@@ -23,8 +23,9 @@ Existing Umami MCP servers each cover part of the problem, but our July 2026 rev
 - Correct auth for both products: `x-umami-api-key` for Umami Cloud and Bearer/login auth for self-hosted instances.
 - Umami 3.2-aware responses, including both `pageviews` and `sessions`, Core Web Vitals, funnels, journeys, attribution, retention, revenue, bounded heatmaps, and replay metadata.
 - Read-only by construction: every tool declares MCP safety annotations; no create, update, delete, raw HTML, or arbitrary URL tool exists.
-- Defense in depth: fixed upstream origin, HTTPS policy, website allowlist, range/page/response-byte caps, request timeout, cancellation propagation, and redacted errors.
-- Agent-friendly output: machine-readable `structuredContent`, bounded pages/series/activity/heatmaps, clear descriptions, a resource, and an analytics prompt.
+- Defense in depth: fixed upstream origin, HTTPS policy, website and team allowlists, range/page/response-byte caps, request timeout, cancellation propagation, and redacted errors.
+- Decision-ready insights: bounded portfolio overviews, traffic-change evidence, release-impact analysis, tracking-health audits, and website resolution without arbitrary API access.
+- Agent-friendly output: machine-readable `structuredContent`, a common status/range/truncation envelope, two resources, and six guided prompts.
 - Contributor-friendly architecture: endpoint modules, dependency-injected HTTP, a central access policy, ADRs, and real MCP integration tests.
 
 See the dated [landscape review](docs/research/umami-mcp-landscape-2026-07.md) for the evidence and methodology.
@@ -41,7 +42,7 @@ npx --yes --prefer-online umami-compass@latest
 
 `@latest` selects the stable npm channel and `--prefer-online` makes npm check the registry even when package metadata is cached. npm still reuses the cached package when that exact release is already present. Updates take effect the next time the MCP process starts; an already running local server cannot replace itself.
 
-Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.1.3`. Never use the preview channel for an unattended production setup.
+Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.2.0`. Never use the preview channel for an unattended production setup.
 
 ### Umami Cloud
 
@@ -84,15 +85,18 @@ With `UMAMI_API_KEY` and no URL, the API root defaults to `https://api.umami.is/
 
 `UMAMI_WEBSITE_IDS` is an optional safety allowlist, not a credential. Replace the example UUID with a website ID from Umami (or from `list_websites`), separate multiple IDs with commas, or remove the variable to discover every website visible directly or through a team membership.
 
+`UMAMI_TEAM_IDS` is a strict team boundary for discovery and direct website/report access. When it is set, user-owned websites without one of the selected team IDs are excluded. If `UMAMI_WEBSITE_IDS` is also set, a website must pass both allowlists.
+
 Do not commit real credentials. Prefer a dedicated view-only Umami account and the client/OS secret store when available.
 
 ## Tools
 
-The least-privilege default `core` set exposes seven aggregate tools. Row-level events, sessions, and other more sensitive modules are opt-in.
+The least-privilege default enables `core,insights`: seven primitive aggregate tools plus five decision-ready aggregate workflows. Row-level events, sessions, replay, heatmaps, and other more sensitive modules remain opt-in.
 
 | Toolset | Tools | Default |
 | --- | --- | --- |
 | `core` | `list_websites`, `get_website`, `get_website_stats`, `get_pageviews`, `get_metrics`, `get_active_visitors`, `get_website_date_range` | Yes |
+| `insights` | `resolve_website`, `get_portfolio_overview`, `explain_traffic_change`, `analyze_release_impact`, `tracking_health_check` | Yes |
 | `events` | `list_events`, `get_event_stats`, `get_event_series` | No |
 | `sessions` | `list_sessions`, `get_session_stats`, `get_session`, `get_session_activity` | No |
 | `performance` | `get_web_vitals`, `get_performance_breakdown` for LCP, INP, CLS, FCP, and TTFB | No |
@@ -101,7 +105,11 @@ The least-privilege default `core` set exposes seven aggregate tools. Row-level 
 | `replay` | `list_replays` (metadata only; never raw rrweb payloads) | No |
 | `heatmaps` | `get_heatmap` (click/scroll pages and bounded detail points) | No |
 
-Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has seven tools; `all` has 30. High-cardinality report, performance, heatmap, and activity results carry explicit limits and truncation metadata. The server also exposes the `umami://websites` resource and the `analytics_report` prompt.
+Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has 12 aggregate tools; `all` has 35. Multi-website insights are bounded to 50 websites with four concurrent website workers. High-cardinality report, performance, heatmap, and activity results carry explicit limits and truncation metadata.
+
+Successful tool responses preserve the existing `data` field and add a common `meta` envelope. Depending on the request it includes `dataStatus`, `emptyReason`, `websiteId`, `requestedRange`, `timezone`, and `truncated`, allowing clients to distinguish a valid empty range from a disabled feature or a truncated result.
+
+The server exposes `umami://websites` and the sanitized `umami://capabilities` resource. Guided prompts cover an analytics report, weekly portfolio briefing, traffic investigation, release impact, tracking health, and conversion audit; each prompt is registered only when its required toolset is enabled. Scheduling a recurring briefing remains the MCP client's responsibility; the local stdio server does not run a background scheduler or send messages.
 
 ## Configuration
 
@@ -120,7 +128,8 @@ Authentication variables have no default. Configure only one of the three modes 
 - `UMAMI_URL` — self-hosted instance origin; `/api` is appended. With API-key auth and no URL, the default is the Umami Cloud API root.
 - `UMAMI_API_URL` — exact API root; takes the place of `UMAMI_URL`. No default.
 - `UMAMI_WEBSITE_IDS` — comma-separated website UUID allowlist. Defaults to every site visible directly or through a team membership.
-- `UMAMI_TOOLSETS` — comma-separated toolsets or `all`. Available values are `core`, `events`, `sessions`, `performance`, `reports`, `revenue`, `replay`, and `heatmaps`. Defaults to `core`.
+- `UMAMI_TEAM_IDS` — comma-separated strict team UUID allowlist for discovery and direct website/report access; at most 25 IDs. User-owned websites are excluded while it is set, and `UMAMI_WEBSITE_IDS` is intersected when both are configured.
+- `UMAMI_TOOLSETS` — comma-separated toolsets or `all`. Available values are `core`, `insights`, `events`, `sessions`, `performance`, `reports`, `revenue`, `replay`, and `heatmaps`. Defaults to `core,insights`.
 
 ### Safety limits
 

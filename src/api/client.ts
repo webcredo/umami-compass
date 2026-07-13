@@ -207,6 +207,7 @@ export class UmamiClient {
   #loginGeneration = 0;
   #loginPromise?: Promise<LoginCredential>;
   #loginToken?: LoginCredential;
+  #teamWebsiteIdsPromise?: Promise<ReadonlySet<string>>;
 
   constructor(config: UmamiCompassConfig, fetchImplementation: Fetch = globalThis.fetch) {
     this.#config = config;
@@ -226,6 +227,11 @@ export class UmamiClient {
     }
   }
 
+  async assertWebsiteAccessible(websiteId: string, signal?: AbortSignal): Promise<void> {
+    this.assertWebsiteAllowed(websiteId);
+    await this.#assertTeamWebsiteAllowed(websiteId, signal);
+  }
+
   async listWebsites(
     query: Query,
     signal?: AbortSignal,
@@ -233,33 +239,63 @@ export class UmamiClient {
     const requestedPage = typeof query.page === "number" ? query.page : 1;
     const requestedPageSize = typeof query.pageSize === "number" ? query.pageSize : 20;
     const search = typeof query.search === "string" ? query.search : undefined;
+    const visible = await this.#discoverWebsites(search, signal);
+    const start = (requestedPage - 1) * requestedPageSize;
+    return {
+      data: visible.slice(start, start + requestedPageSize),
+      count: visible.length,
+      page: requestedPage,
+      pageSize: requestedPageSize,
+    } satisfies PagedResponse<Website>;
+  }
+
+  async #discoverWebsites(search: string | undefined, signal?: AbortSignal): Promise<Website[]> {
     const budget: DiscoveryBudget = { websitePages: 0 };
-    const websites = await this.#listAllWebsitePages(
-      "websites",
-      { includeTeams: true, page: 1, pageSize: DISCOVERY_PAGE_SIZE, search },
-      budget,
-      signal,
-    );
-    const teamPage = requireTeamPage(
-      await this.get<unknown>("teams", { page: 1, pageSize: DISCOVERY_PAGE_SIZE }, signal),
-    );
-    if (teamPage.count > MAX_DISCOVERY_TEAMS) {
-      throw new UmamiError(
-        "VALIDATION_ERROR",
-        `The account belongs to more than ${MAX_DISCOVERY_TEAMS} teams, so website discovery was stopped safely. Use UMAMI_WEBSITE_IDS or a more limited Umami identity.`,
-      );
-    }
-    if (teamPage.data.length < teamPage.count) {
-      throw new UmamiError("INVALID_RESPONSE", "Umami returned an incomplete team list.");
-    }
-    for (const team of teamPage.data) {
-      websites.push(
-        ...(await this.#listAllWebsitePages(
-          `teams/${encodeURIComponent(team.id)}/websites`,
-          { page: 1, pageSize: DISCOVERY_PAGE_SIZE, search },
+    const websites = this.#config.teamIds
+      ? []
+      : await this.#listAllWebsitePages(
+          "websites",
+          {
+            includeTeams: true,
+            page: 1,
+            pageSize: DISCOVERY_PAGE_SIZE,
+            search,
+          },
           budget,
           signal,
-        )),
+        );
+
+    let teams: Team[];
+    if (this.#config.teamIds) {
+      teams = [...this.#config.teamIds].map((id) => ({ id }));
+    } else {
+      const teamPage = requireTeamPage(
+        await this.get<unknown>("teams", { page: 1, pageSize: DISCOVERY_PAGE_SIZE }, signal),
+      );
+      if (teamPage.count > MAX_DISCOVERY_TEAMS) {
+        throw new UmamiError(
+          "VALIDATION_ERROR",
+          `The account belongs to more than ${MAX_DISCOVERY_TEAMS} teams, so website discovery was stopped safely. Use UMAMI_TEAM_IDS, UMAMI_WEBSITE_IDS, or a more limited Umami identity.`,
+        );
+      }
+      if (teamPage.data.length < teamPage.count) {
+        throw new UmamiError("INVALID_RESPONSE", "Umami returned an incomplete team list.");
+      }
+      teams = teamPage.data;
+    }
+
+    for (const team of teams) {
+      const teamWebsites = await this.#listAllWebsitePages(
+        `teams/${encodeURIComponent(team.id)}/websites`,
+        { page: 1, pageSize: DISCOVERY_PAGE_SIZE, search },
+        budget,
+        signal,
+      );
+      websites.push(
+        ...teamWebsites.map((website) => ({
+          ...website,
+          teamId: website.teamId ?? team.id,
+        })),
       );
     }
 
@@ -268,17 +304,14 @@ export class UmamiClient {
       const key = website.id.toLowerCase();
       if (!unique.has(key)) unique.set(key, website);
     }
-    const visible = [...unique.values()].filter(
-      (website) =>
-        !this.#config.websiteIds || this.#config.websiteIds.has(website.id.toLowerCase()),
-    );
-    const start = (requestedPage - 1) * requestedPageSize;
-    return {
-      data: visible.slice(start, start + requestedPageSize),
-      count: visible.length,
-      page: requestedPage,
-      pageSize: requestedPageSize,
-    } satisfies PagedResponse<Website>;
+    return [...unique.values()].filter((website) => {
+      const websiteAllowed =
+        !this.#config.websiteIds || this.#config.websiteIds.has(website.id.toLowerCase());
+      const teamAllowed =
+        !this.#config.teamIds ||
+        (website.teamId != null && this.#config.teamIds.has(website.teamId.toLowerCase()));
+      return websiteAllowed && teamAllowed;
+    });
   }
 
   async #listAllWebsitePages(
@@ -314,17 +347,21 @@ export class UmamiClient {
 
   async getWebsite(websiteId: string, signal?: AbortSignal): Promise<Website> {
     const normalizedWebsiteId = websiteId.toLowerCase();
-    this.assertWebsiteAllowed(normalizedWebsiteId);
+    await this.assertWebsiteAccessible(normalizedWebsiteId, signal);
     return requireWebsite(
-      await this.get<unknown>(
+      await this.#request<unknown>(
         `websites/${encodeURIComponent(normalizedWebsiteId)}`,
-        undefined,
-        signal,
+        { method: "GET", signal },
+        true,
       ),
     );
   }
 
   async get<T = unknown>(path: string, query?: Query, signal?: AbortSignal): Promise<T> {
+    const websiteMatch = /^websites\/([0-9a-f-]{36})(?:\/|$)/i.exec(path);
+    if (websiteMatch?.[1]) {
+      await this.assertWebsiteAccessible(websiteMatch[1], signal);
+    }
     return this.#request<T>(path, { method: "GET", query, signal }, true);
   }
 
@@ -350,12 +387,37 @@ export class UmamiClient {
     if (!allowedTypes.has(request.type)) {
       throw new UmamiError("CONFIGURATION_ERROR", "Unsupported read-only Umami report type.");
     }
-    this.assertWebsiteAllowed(request.websiteId);
+    await this.assertWebsiteAccessible(request.websiteId, signal);
     return this.#request<T>(
       `reports/${request.type}`,
       { body: request, method: "POST", signal },
       true,
     );
+  }
+
+  async #assertTeamWebsiteAllowed(websiteId: string, signal?: AbortSignal): Promise<void> {
+    if (!this.#config.teamIds) return;
+    const normalizedWebsiteId = websiteId.toLowerCase();
+    let discovery = this.#teamWebsiteIdsPromise;
+    if (!discovery) {
+      discovery = this.#discoverWebsites(undefined, signal).then(
+        (websites) => new Set(websites.map((website) => website.id.toLowerCase())),
+      );
+      this.#teamWebsiteIdsPromise = discovery;
+    }
+    let allowedIds: ReadonlySet<string>;
+    try {
+      allowedIds = await discovery;
+    } catch (error) {
+      if (this.#teamWebsiteIdsPromise === discovery) this.#teamWebsiteIdsPromise = undefined;
+      throw error;
+    }
+    if (!allowedIds.has(normalizedWebsiteId)) {
+      throw new UmamiError(
+        "FORBIDDEN",
+        "This website is outside the configured UMAMI_TEAM_IDS allowlist.",
+      );
+    }
   }
 
   async #request<T>(path: string, options: RequestOptions, retryLogin: boolean): Promise<T> {

@@ -2,6 +2,7 @@ import { UmamiError } from "./api/errors.js";
 
 export const TOOLSETS = [
   "core",
+  "insights",
   "events",
   "sessions",
   "performance",
@@ -25,6 +26,7 @@ export interface UmamiCompassConfig {
   maxResponseBytes: number;
   requestTimeoutMs: number;
   toolsets: ReadonlySet<Toolset>;
+  teamIds?: ReadonlySet<string>;
   websiteIds?: ReadonlySet<string>;
 }
 
@@ -137,7 +139,7 @@ function parseAuth(env: NodeJS.ProcessEnv): UmamiAuth {
 }
 
 function parseToolsets(value: string | undefined): ReadonlySet<Toolset> {
-  if (!value) return new Set<Toolset>(["core"]);
+  if (!value) return new Set<Toolset>(["core", "insights"]);
   const names = value
     .split(",")
     .map((item) => item.trim())
@@ -161,25 +163,23 @@ function parseToolsets(value: string | undefined): ReadonlySet<Toolset> {
   return new Set(names as Toolset[]);
 }
 
-function parseWebsiteIds(value: string | undefined): ReadonlySet<string> | undefined {
+function parseUuidAllowlist(
+  value: string | undefined,
+  key: "UMAMI_TEAM_IDS" | "UMAMI_WEBSITE_IDS",
+  maximum: number,
+): ReadonlySet<string> | undefined {
   if (!value) return undefined;
   const ids = value
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
   if (ids.length === 0) return undefined;
-  if (ids.length > 100) {
-    throw new UmamiError(
-      "CONFIGURATION_ERROR",
-      "UMAMI_WEBSITE_IDS cannot contain more than 100 websites.",
-    );
+  if (ids.length > maximum) {
+    throw new UmamiError("CONFIGURATION_ERROR", `${key} cannot contain more than ${maximum} IDs.`);
   }
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   if (ids.some((id) => !uuid.test(id))) {
-    throw new UmamiError(
-      "CONFIGURATION_ERROR",
-      "UMAMI_WEBSITE_IDS must be a comma-separated list of UUIDs.",
-    );
+    throw new UmamiError("CONFIGURATION_ERROR", `${key} must be a comma-separated list of UUIDs.`);
   }
   return new Set(ids.map((id) => id.toLowerCase()));
 }
@@ -214,6 +214,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): UmamiCompassCo
       { min: 1_000, max: 120_000 },
     ),
     toolsets: parseToolsets(optional(env, "UMAMI_TOOLSETS")),
-    websiteIds: parseWebsiteIds(optional(env, "UMAMI_WEBSITE_IDS")),
+    teamIds: parseUuidAllowlist(optional(env, "UMAMI_TEAM_IDS"), "UMAMI_TEAM_IDS", 25),
+    websiteIds: parseUuidAllowlist(optional(env, "UMAMI_WEBSITE_IDS"), "UMAMI_WEBSITE_IDS", 100),
   };
 }

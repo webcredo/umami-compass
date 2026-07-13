@@ -135,16 +135,39 @@ const seriesPointSchema = z
   })
   .passthrough();
 
+export const resultMetaSchema = z
+  .object({
+    dataStatus: z.enum(["available", "empty", "unknown"]),
+    emptyReason: z.string().optional(),
+    websiteId: z.string().uuid().optional(),
+    requestedRange: z
+      .object({
+        start: timeSchema,
+        end: timeSchema,
+      })
+      .optional(),
+    timezone: z.string().min(1).max(100).optional(),
+    truncated: z.boolean(),
+  })
+  .passthrough();
+
+export const resultMetaOutputSchema = {
+  meta: resultMetaSchema,
+};
+
 export const outputSchema = {
   data: z.json().describe("JSON analytics data returned by Umami Compass"),
+  ...resultMetaOutputSchema,
 };
 
 export const recordOutputSchema = {
   data: jsonRecordSchema,
+  ...resultMetaOutputSchema,
 };
 
 export const arrayOutputSchema = {
   data: z.array(z.json()),
+  ...resultMetaOutputSchema,
 };
 
 export const pagedOutputSchema = {
@@ -156,6 +179,7 @@ export const pagedOutputSchema = {
       pageSize: z.number().int().nonnegative(),
     })
     .passthrough(),
+  ...resultMetaOutputSchema,
 };
 
 export const pageviewsDataSchema = z
@@ -167,6 +191,7 @@ export const pageviewsDataSchema = z
 
 export const pageviewsOutputSchema = {
   data: pageviewsDataSchema,
+  ...resultMetaOutputSchema,
 };
 
 export const boundedItemsDataSchema = z
@@ -180,6 +205,7 @@ export const boundedItemsDataSchema = z
 
 export const boundedItemsOutputSchema = {
   data: boundedItemsDataSchema,
+  ...resultMetaOutputSchema,
 };
 
 export function parseUpstream<T>(schema: z.ZodType<T>, value: unknown, label: string): T {

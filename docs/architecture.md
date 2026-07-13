@@ -5,9 +5,9 @@ Umami Compass separates transport, MCP presentation, policy, and upstream HTTP s
 ## Layers
 
 1. `src/cli.ts` owns process behavior and the stdio transport. It writes no diagnostics to stdout after MCP starts.
-2. `src/config.ts` resolves a single fixed API root, exactly one auth strategy, toolsets, allowlists, and resource limits.
-3. `src/api/client.ts` owns headers, generation-safe lazy login/401 refresh, redirects, timeouts, cancellation, byte-bounded JSON parsing, and safe errors.
-4. `src/mcp/modules/*` maps bounded Zod inputs to documented Umami endpoint families.
+2. `src/config.ts` resolves a single fixed API root, exactly one auth strategy, toolsets, website/team allowlists, and resource limits.
+3. `src/api/client.ts` owns centralized website/team authorization, headers, generation-safe lazy login/401 refresh, redirects, timeouts, cancellation, byte-bounded JSON parsing, and safe errors.
+4. `src/mcp/modules/*` maps bounded Zod inputs to documented Umami endpoint families or bounded multi-endpoint insight workflows.
 5. `src/mcp/tool-module.ts` is the extension seam. Modules declare an ID and `read` or `write` access.
 6. `src/server.ts` applies the central access policy, registers selected modules, and exposes common MCP resources/prompts.
 
@@ -41,7 +41,7 @@ Adding new toolset IDs is intentionally a reviewed change because IDs are user-f
 
 ## Compatibility policy
 
-Umami 3.2.x is the reference target. The server normally wraps successful upstream JSON under `structuredContent.data`, preserving new fields. Explicitly bounded high-cardinality results (report arrays, performance series/breakdowns, heatmap points, and session activity) add truncation metadata and keep the first requested items. Inputs are curated because allowing arbitrary query names would widen the data and security surface silently.
+Umami 3.2.x is the reference target. The server wraps successful output under `structuredContent.data` and adds `structuredContent.meta` with a normalized data status plus applicable website, requested range, timezone, empty reason, and truncation state. Primitive endpoint tools preserve new upstream fields. Insight workflows retain the aggregate evidence used for their deterministic calculations and label associations as non-causal. Period comparisons use explicit equal-length requests. When a metric top-N response may be truncated, missing rows remain unknown and are omitted from deltas instead of being treated as zero. Explicitly bounded high-cardinality results (report arrays, performance series/breakdowns, heatmap points, session activity, and multi-website workflows) keep only the requested items. Inputs are curated because allowing arbitrary query names would widen the data and security surface silently.
 
 When Umami changes an endpoint:
 
@@ -54,6 +54,7 @@ When Umami changes an endpoint:
 
 - The MCP host and local environment are trusted to protect secrets.
 - The Umami origin is selected by the operator at startup and cannot be changed by a model.
+- Website and team allowlists apply before direct website requests and typed reports, not only during resource discovery.
 - Umami is treated as an untrusted network service: redirects, oversized responses, and invalid JSON fail closed; response bodies do not enter errors.
 - Model context is treated as scarce and potentially retained: page/range caps and exclusion of raw replay streams reduce exposure.
 - Tool annotations are advisory UX metadata, not authorization. Enforced policy and upstream permissions are the security boundary.

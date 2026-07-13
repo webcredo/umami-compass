@@ -4,11 +4,18 @@ import { parseTimeRange } from "../../time.js";
 import { describeRecorderDataStatus, recorderDataStatusShape } from "../recorder-status.js";
 import { reportFilters, requireRecord } from "../report-utils.js";
 import { READ_ONLY_ANNOTATIONS, runTool } from "../result.js";
-import { filtersSchema, recordOutputSchema, timeSchema, uuidSchema } from "../schemas.js";
+import {
+  filtersSchema,
+  recordOutputSchema,
+  resultMetaOutputSchema,
+  timeSchema,
+  uuidSchema,
+} from "../schemas.js";
 import type { ToolModule } from "../tool-module.js";
 
 const heatmapOutputSchema = {
   data: recordOutputSchema.data.extend(recorderDataStatusShape).passthrough(),
+  ...resultMetaOutputSchema,
 };
 
 function boundHeatmapResult(
@@ -100,36 +107,39 @@ export const heatmapsModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ websiteId, start, end, mode, urlPath, maxPoints, maxBuckets, maxPages, filters }, extra) =>
-        runTool(async () => {
-          const { startAt, endAt } = parseTimeRange(start, end, config.maxRangeDays);
-          const body: HeatmapReportRequest = {
-            websiteId,
-            type: "heatmap",
-            parameters: {
-              startDate: new Date(startAt).toISOString(),
-              endDate: new Date(endAt).toISOString(),
-              mode,
-              ...(urlPath === undefined ? {} : { urlPath }),
-            },
-            filters: reportFilters(filters),
-          };
-          const result = requireRecord(await client.getHeatmapReport(body, extra.signal));
-          const status = await describeRecorderDataStatus(
-            client,
-            websiteId,
-            "heatmap",
-            hasHeatmapData(result, mode, urlPath),
-            urlPath === undefined ? "no_data_in_range" : "no_data_for_page",
-            extra.signal,
-          );
-          return {
-            ...(boundHeatmapResult(result, { maxBuckets, maxPages, maxPoints }) as Record<
-              string,
-              unknown
-            >),
-            ...status,
-          };
-        }),
+        runTool(
+          async () => {
+            const { startAt, endAt } = parseTimeRange(start, end, config.maxRangeDays);
+            const body: HeatmapReportRequest = {
+              websiteId,
+              type: "heatmap",
+              parameters: {
+                startDate: new Date(startAt).toISOString(),
+                endDate: new Date(endAt).toISOString(),
+                mode,
+                ...(urlPath === undefined ? {} : { urlPath }),
+              },
+              filters: reportFilters(filters),
+            };
+            const result = requireRecord(await client.getHeatmapReport(body, extra.signal));
+            const status = await describeRecorderDataStatus(
+              client,
+              websiteId,
+              "heatmap",
+              hasHeatmapData(result, mode, urlPath),
+              urlPath === undefined ? "no_data_in_range" : "no_data_for_page",
+              extra.signal,
+            );
+            return {
+              ...(boundHeatmapResult(result, { maxBuckets, maxPages, maxPoints }) as Record<
+                string,
+                unknown
+              >),
+              ...status,
+            };
+          },
+          { websiteId, range: { start, end } },
+        ),
     );
   },
 };

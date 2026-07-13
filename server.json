@@ -3,7 +3,7 @@
   "name": "io.github.webcredo/umami-compass",
   "title": "Umami Compass",
   "description": "Secure Umami Analytics MCP server for Cloud and self-hosted deployments",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "websiteUrl": "https://github.com/webcredo/umami-compass",
   "repository": {
     "url": "https://github.com/webcredo/umami-compass",
@@ -15,7 +15,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "umami-compass",
-      "version": "0.1.3",
+      "version": "0.2.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -62,11 +62,16 @@
           "isRequired": false
         },
         {
+          "name": "UMAMI_TEAM_IDS",
+          "description": "Optional comma-separated team UUID allowlist",
+          "isRequired": false
+        },
+        {
           "name": "UMAMI_TOOLSETS",
           "description": "Comma-separated toolsets or all",
           "isRequired": false,
-          "default": "core",
-          "placeholder": "core,events,sessions,performance,reports,revenue,replay,heatmaps"
+          "default": "core,insights",
+          "placeholder": "core,insights,events,sessions,performance,reports,revenue,replay,heatmaps"
         },
         {
           "name": "UMAMI_MAX_RESPONSE_BYTES",
