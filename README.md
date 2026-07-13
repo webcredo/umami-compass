@@ -1,10 +1,8 @@
 # Umami Compass
 
-**Umami Analytics for AI agents — Cloud and self-hosted.**
+**Open-source MCP server for Umami Analytics — Cloud and self-hosted.**
 
-[![Umami Compass: Analytics for AI agents, Cloud and self-hosted](https://raw.githubusercontent.com/webcredo/umami-compass/main/docs/assets/umami-compass-hero-v2.png)](https://raw.githubusercontent.com/webcredo/umami-compass/main/docs/assets/umami-compass-demo.mp4)
-
-_Click the hero to watch the 28-second product overview._
+![Umami Compass MCP server for Umami Analytics: Cloud and self-hosted](https://raw.githubusercontent.com/webcredo/umami-compass/main/docs/assets/umami-compass-hero-v3.png)
 
 [![CI](https://github.com/webcredo/umami-compass/actions/workflows/ci.yml/badge.svg)](https://github.com/webcredo/umami-compass/actions/workflows/ci.yml)
 [![license](https://img.shields.io/github/license/webcredo/umami-compass)](LICENSE)
@@ -96,19 +94,27 @@ Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has seven tool
 
 Choose exactly one authentication mode.
 
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `UMAMI_API_KEY` | Umami Cloud/client API key; sent only as `x-umami-api-key` | — |
-| `UMAMI_ACCESS_TOKEN` | Existing Bearer token | — |
-| `UMAMI_USERNAME` + `UMAMI_PASSWORD` | Lazy self-hosted login with cached token and one refresh on 401 | — |
-| `UMAMI_URL` | Self-hosted instance origin; appends `/api` | Cloud root only with API-key auth |
-| `UMAMI_API_URL` | Exact API root; takes the place of `UMAMI_URL` | — |
-| `UMAMI_WEBSITE_IDS` | Comma-separated website UUID allowlist | All accessible sites |
-| `UMAMI_TOOLSETS` | `core,events,sessions,performance,reports,revenue,replay,heatmaps` or `all` | `core` |
-| `UMAMI_REQUEST_TIMEOUT_MS` | Per-request timeout, 1,000–120,000 ms | `30000` |
-| `UMAMI_MAX_RANGE_DAYS` | Maximum analytics range, 1–3,650 days | `366` |
-| `UMAMI_MAX_RESPONSE_BYTES` | Maximum decoded upstream JSON body, 102,400–52,428,800 bytes | `10485760` |
-| `UMAMI_ALLOW_INSECURE_HTTP` | Permit non-loopback HTTP | `false` |
+### Authentication
+
+- `UMAMI_API_KEY` — Umami Cloud/client API key. It is sent only as `x-umami-api-key`.
+- `UMAMI_ACCESS_TOKEN` — existing Bearer token.
+- `UMAMI_USERNAME` + `UMAMI_PASSWORD` — lazy self-hosted login with a cached token and one refresh on 401.
+
+Authentication variables have no default. Configure only one of the three modes above.
+
+### Endpoint and access scope
+
+- `UMAMI_URL` — self-hosted instance origin; `/api` is appended. With API-key auth and no URL, the default is the Umami Cloud API root.
+- `UMAMI_API_URL` — exact API root; takes the place of `UMAMI_URL`. No default.
+- `UMAMI_WEBSITE_IDS` — comma-separated website UUID allowlist. Defaults to every site visible to the account.
+- `UMAMI_TOOLSETS` — comma-separated toolsets or `all`. Available values are `core`, `events`, `sessions`, `performance`, `reports`, `revenue`, `replay`, and `heatmaps`. Defaults to `core`.
+
+### Safety limits
+
+- `UMAMI_REQUEST_TIMEOUT_MS` — per-request timeout from 1,000 to 120,000 ms. Defaults to `30000`.
+- `UMAMI_MAX_RANGE_DAYS` — maximum analytics range from 1 to 3,650 days. Defaults to `366`.
+- `UMAMI_MAX_RESPONSE_BYTES` — maximum decoded upstream JSON body from 102,400 to 52,428,800 bytes. Defaults to `10485760`.
+- `UMAMI_ALLOW_INSECURE_HTTP` — permits non-loopback HTTP when set to `true`. Defaults to `false`.
 
 HTTPS is mandatory by default. Plain HTTP is accepted automatically only for `localhost`, `127.0.0.1`, and `::1`.
 
