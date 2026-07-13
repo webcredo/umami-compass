@@ -56,4 +56,26 @@ describe("release metadata", () => {
     }
     expect(missing).toEqual([]);
   });
+
+  it("documents the auto-updating stable launcher without legacy npx forms", async () => {
+    const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+
+    expect(readme).toContain('"args": ["--yes", "--prefer-online", "umami-compass@latest"]');
+    expect(readme).toContain("npx --yes --prefer-online umami-compass@latest");
+    expect(readme).not.toContain('"args": ["-y", "umami-compass"]');
+    expect(readme).not.toMatch(/npx -y umami-compass(?:\s|`|$)/);
+  });
+
+  it("keeps all public release channels in the protected release workflow", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/release.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain('tags: ["v*"]');
+    expect(workflow).toContain("npm publish --provenance");
+    expect(workflow).toContain('MCP_PUBLISHER_PATH}" login github-oidc');
+    expect(workflow).toContain('MCP_PUBLISHER_PATH}" publish');
+    expect(workflow).toContain("gh release create");
+  });
 });

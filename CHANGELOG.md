@@ -4,6 +4,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-13
+
+### Changed
+
+- Make documented stdio installs follow the stable npm channel with an explicit online freshness check.
+- Publish and verify npm, MCP Registry metadata, and GitHub Releases from one retry-safe tag workflow.
+
 ## [0.1.1] - 2026-07-13
 
 ### Fixed
