@@ -29,6 +29,9 @@ The roadmap describes direction, not a compatibility promise. Proposals should b
 - Expanded metrics, weekly sessions, and bounded replay detail.
 - Saved replay metadata where public API stability permits.
 - Capability discovery for differences between Cloud and self-hosted releases.
+- Configurable route-template grouping such as `/casinos/:slug` to keep page-level comparisons statistically useful.
+- Enriched RUM dimensions for country × device × page, navigation and connection type, cache status, edge region, and cold-versus-cached visits where upstream instrumentation exposes them safely.
+- Session-scoped TTFB → FCP → LCP diagnostics with LCP element/resource attribution; this requires data beyond Umami's aggregate performance report.
 
 ## 0.5 — remote deployment profile
 

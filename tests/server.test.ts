@@ -102,7 +102,7 @@ describe("Umami Compass MCP server", () => {
       enabledToolsets?: string[];
       version?: string;
     };
-    expect(capabilityData.version).toBe("0.3.1");
+    expect(capabilityData.version).toBe("0.4.0");
     expect(capabilityData.enabledToolsets).toEqual(["core", "insights"]);
     expect(JSON.stringify(capabilities.contents)).not.toContain("test-key");
   });
@@ -123,7 +123,7 @@ describe("Umami Compass MCP server", () => {
     expect(result.structuredContent).toMatchObject({
       data: {
         name: "umami-compass",
-        version: "0.3.1",
+        version: "0.4.0",
         access: "read-only",
         capabilities: {
           emptyReferrerIsolation: true,

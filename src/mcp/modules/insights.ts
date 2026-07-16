@@ -46,12 +46,35 @@ import {
 const trafficDimensionSchema = z.enum(TRAFFIC_DIMENSIONS);
 const websiteLimitSchema = z.number().int().min(1).max(50).default(25);
 const MIN_RELEASE_TRAFFIC_CHANGE_PERCENT = 10;
+const MIN_RELEASE_TRAFFIC_PAGEVIEWS = 500;
+const MIN_RELEASE_AUDIENCE_SAMPLES = 100;
+const MAX_RELEASE_WINDOW_DAYS = 30;
+const DAY_MS = 86_400_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const releaseTimestampSchema = timeSchema.refine(
   (value) =>
     typeof value === "number" || (/T/i.test(value) && /(Z|[+-]\d{2}:?\d{2})$/i.test(value.trim())),
   "releaseAt must be Unix milliseconds or an ISO 8601 date-time with an explicit timezone",
 );
+const otherReleaseSchema = z
+  .object({
+    releaseAt: releaseTimestampSchema,
+    id: z.string().min(1).max(200).optional(),
+    description: z.string().min(1).max(1_000).optional(),
+  })
+  .strict();
+
+function materialDirection(percent: number | null | undefined) {
+  if (percent === null || percent === undefined) return "neutral" as const;
+  if (percent >= MIN_RELEASE_TRAFFIC_CHANGE_PERCENT) return "positive" as const;
+  if (percent <= -MIN_RELEASE_TRAFFIC_CHANGE_PERCENT) return "negative" as const;
+  return "neutral" as const;
+}
+
+function ratio(numerator: number, denominator: number): number | null {
+  if (denominator === 0) return null;
+  return numerator / denominator;
+}
 
 async function safeReferralSpamAssessment(
   client: Parameters<typeof assessReferralSpam>[0],
@@ -1037,11 +1060,11 @@ export const insightsModule: ToolModule = {
       {
         title: "Analyze release impact",
         description:
-          "Compare equal pre- and post-release windows across traffic breakdowns and Core Web Vitals. Recent releases use a partial post window and an equally shortened pre window.",
+          "Compare equal pre- and post-release windows across traffic breakdowns and Core Web Vitals. Returns a compact executive summary by default; request full detail for drill-down evidence. Recent releases use a partial post window and an equally shortened pre window.",
         inputSchema: {
           websiteId: uuidSchema,
           releaseAt: releaseTimestampSchema,
-          windowDays: z.number().int().min(1).max(30).default(7),
+          windowDays: z.number().int().min(1).max(MAX_RELEASE_WINDOW_DAYS).default(7),
           dimensions: z
             .array(trafficDimensionSchema)
             .min(1)
@@ -1053,6 +1076,8 @@ export const insightsModule: ToolModule = {
           filters: segmentedFiltersSchema.optional(),
           trafficSegment: trafficSegmentSchema,
           timezone: timezoneSchema,
+          otherReleases: z.array(otherReleaseSchema).max(20).optional(),
+          detailLevel: z.enum(["summary", "full"]).default("summary"),
         },
         outputSchema,
         annotations: READ_ONLY_ANNOTATIONS,
@@ -1068,6 +1093,8 @@ export const insightsModule: ToolModule = {
           filters,
           trafficSegment,
           timezone,
+          otherReleases,
+          detailLevel,
         },
         extra,
       ) =>
@@ -1078,7 +1105,7 @@ export const insightsModule: ToolModule = {
             if (releaseTime > now) {
               throw new UmamiError("VALIDATION_ERROR", "releaseAt cannot be in the future.");
             }
-            const targetDuration = windowDays * 86_400_000;
+            const targetDuration = windowDays * DAY_MS;
             const postEnd = Math.min(releaseTime + targetDuration - 1, now);
             const actualDuration = postEnd - releaseTime;
             if (actualDuration < 3_600_000) {
@@ -1090,13 +1117,49 @@ export const insightsModule: ToolModule = {
             const post: TimePeriod = { startAt: releaseTime, endAt: postEnd };
             const preEnd = releaseTime - 1;
             const pre: TimePeriod = { startAt: preEnd - actualDuration, endAt: preEnd };
+            const parsedOtherReleases = (otherReleases ?? []).map((release) => {
+              const time = parseTimeRange(
+                release.releaseAt,
+                release.releaseAt,
+                config.maxRangeDays,
+              ).startAt;
+              if (time > now) {
+                throw new UmamiError(
+                  "VALIDATION_ERROR",
+                  "otherReleases cannot contain a future release.",
+                );
+              }
+              return {
+                releaseAt: new Date(time).toISOString(),
+                ...(release.id ? { id: release.id } : {}),
+                ...(release.description ? { description: release.description } : {}),
+                period: time < releaseTime ? ("before" as const) : ("after" as const),
+                time,
+              };
+            });
+            const duplicateTargetReleasesIgnored = parsedOtherReleases.filter(
+              ({ time }) => time === releaseTime,
+            ).length;
+            const competingReleases = parsedOtherReleases
+              .filter(
+                ({ time }) => time !== releaseTime && time >= pre.startAt && time <= post.endAt,
+              )
+              .map(({ time: _time, ...release }) => release);
+            const releaseContextStatus =
+              otherReleases === undefined
+                ? ("unknown" as const)
+                : competingReleases.length > 0
+                  ? ("confounded" as const)
+                  : ("no_competing_releases_reported" as const);
             const website = await client.getWebsite(websiteId, extra.signal);
             const { channel, ...analyticsFilters } = filters ?? {};
-            const effectiveDimensions =
+            const requestedDimensions =
               dimensions ??
               (channel
                 ? (["channel", "device"] as TrafficDimension[])
                 : (["path", "referrer", "device", "channel", "event"] as TrafficDimension[]));
+            const effectiveDimensions =
+              detailLevel === "full" ? requestedDimensions : ([] as TrafficDimension[]);
             if (
               channel !== undefined &&
               analyticsFilters.match === "any" &&
@@ -1151,6 +1214,51 @@ export const insightsModule: ToolModule = {
                     signal: extra.signal,
                   });
             const trafficPercent = traffic.changes.pageviews?.percent ?? null;
+            const visitorsPercent = traffic.changes.visitors?.percent ?? null;
+            const visitsPercent = traffic.changes.visits?.percent ?? null;
+            const pageviewsDirection = materialDirection(trafficPercent);
+            const visitorsDirection = materialDirection(visitorsPercent);
+            const visitsDirection = materialDirection(visitsPercent);
+            const audienceDirections = new Set(
+              [visitorsDirection, visitsDirection].filter((direction) => direction !== "neutral"),
+            );
+            const trafficImpact =
+              audienceDirections.size === 0
+                ? ("neutral" as const)
+                : audienceDirections.size > 1
+                  ? ("mixed" as const)
+                  : audienceDirections.has("positive")
+                    ? ("positive" as const)
+                    : ("negative" as const);
+            const currentPageviewsPerVisit = ratio(
+              traffic.current.pageviews,
+              traffic.current.visits,
+            );
+            const comparisonPageviewsPerVisit = ratio(
+              traffic.comparison.pageviews,
+              traffic.comparison.visits,
+            );
+            const pageviewsPerVisitPercent =
+              currentPageviewsPerVisit === null || comparisonPageviewsPerVisit === null
+                ? null
+                : percentChange(currentPageviewsPerVisit, comparisonPageviewsPerVisit);
+            const depthDirection = materialDirection(pageviewsPerVisitPercent);
+            const trafficPattern =
+              pageviewsDirection === "negative" &&
+              depthDirection === "negative" &&
+              trafficImpact !== "negative"
+                ? ("reduced_page_depth" as const)
+                : pageviewsDirection === "positive" &&
+                    depthDirection === "positive" &&
+                    trafficImpact !== "positive"
+                  ? ("increased_page_depth" as const)
+                  : trafficImpact === "positive"
+                    ? ("audience_growth" as const)
+                    : trafficImpact === "negative"
+                      ? ("audience_decline" as const)
+                      : trafficImpact === "mixed"
+                        ? ("mixed_audience_signals" as const)
+                        : ("stable_audience" as const);
             const performanceChanges = "changes" in performance ? performance.changes : undefined;
             const performanceRegressions =
               performance.status === "available" && performanceChanges
@@ -1164,35 +1272,189 @@ export const insightsModule: ToolModule = {
                     .filter(([, change]) => change.impact === "improved")
                     .map(([metric]) => metric)
                 : [];
-            const trafficImpact =
-              trafficPercent === null ||
-              Math.abs(trafficPercent) < MIN_RELEASE_TRAFFIC_CHANGE_PERCENT
-                ? "neutral"
-                : trafficPercent > 0
-                  ? "positive"
-                  : "negative";
-            const verdict =
-              performance.status !== "available"
-                ? trafficImpact === "neutral"
-                  ? "no_clear_change"
-                  : "traffic_change_only"
-                : trafficImpact === "negative" && performanceRegressions.length > 0
-                  ? "likely_regression"
-                  : trafficImpact === "positive" && performanceImprovements.length > 0
-                    ? "likely_improvement"
-                    : trafficImpact === "neutral" && performanceRegressions.length === 0
-                      ? "no_clear_change"
-                      : "mixed";
+            const performanceSampleInsufficient =
+              includePerformance &&
+              "sampleSufficient" in performance &&
+              performance.sampleSufficient === false;
             const performanceEvidenceSufficient =
               !includePerformance ||
-              (performance.status === "available" &&
-                "sampleSufficient" in performance &&
-                performance.sampleSufficient === true);
+              ("sampleSufficient" in performance && performance.sampleSufficient === true);
             const performanceScopeComparable = performance.status !== "scope_mismatch";
             const trafficEvidenceSufficient =
-              traffic.current.pageviews >= 500 &&
-              traffic.comparison.pageviews >= 500 &&
+              traffic.current.pageviews >= MIN_RELEASE_TRAFFIC_PAGEVIEWS &&
+              traffic.comparison.pageviews >= MIN_RELEASE_TRAFFIC_PAGEVIEWS &&
+              traffic.current.visitors >= MIN_RELEASE_AUDIENCE_SAMPLES &&
+              traffic.comparison.visitors >= MIN_RELEASE_AUDIENCE_SAMPLES &&
+              traffic.current.visits >= MIN_RELEASE_AUDIENCE_SAMPLES &&
+              traffic.comparison.visits >= MIN_RELEASE_AUDIENCE_SAMPLES &&
               !traffic.dataQuality.comparisonBaselineZero;
+            const trafficImpactForVerdict = trafficEvidenceSufficient
+              ? trafficImpact
+              : ("neutral" as const);
+            const hasPerformanceRegression = performanceRegressions.length > 0;
+            const hasPerformanceImprovement = performanceImprovements.length > 0;
+            const evidenceVerdict =
+              performance.status !== "available" || performanceSampleInsufficient
+                ? trafficImpactForVerdict === "neutral"
+                  ? "no_clear_change"
+                  : "traffic_change_only"
+                : hasPerformanceRegression && hasPerformanceImprovement
+                  ? "mixed"
+                  : hasPerformanceRegression
+                    ? trafficImpactForVerdict === "positive"
+                      ? "mixed"
+                      : "likely_regression"
+                    : hasPerformanceImprovement
+                      ? trafficImpactForVerdict === "negative"
+                        ? "mixed"
+                        : "likely_improvement"
+                      : trafficImpactForVerdict === "neutral"
+                        ? "no_clear_change"
+                        : "traffic_change_only";
+            const noSufficientEvidence =
+              !trafficEvidenceSufficient &&
+              (performance.status !== "available" || !performanceEvidenceSufficient);
+            const verdict =
+              performanceSampleInsufficient || noSufficientEvidence
+                ? ("insufficient_data" as const)
+                : releaseContextStatus === "confounded" && evidenceVerdict !== "no_clear_change"
+                  ? ("confounded" as const)
+                  : evidenceVerdict;
+            const performanceSampleReadiness =
+              "currentSampleCount" in performance &&
+              "comparisonSampleCount" in performance &&
+              "minimumSampleCount" in performance &&
+              typeof performance.currentSampleCount === "number" &&
+              typeof performance.comparisonSampleCount === "number" &&
+              typeof performance.minimumSampleCount === "number"
+                ? (() => {
+                    const minimum = performance.minimumSampleCount;
+                    const postReleaseSamplesNeeded = Math.max(
+                      0,
+                      minimum - performance.currentSampleCount,
+                    );
+                    const baselineSamplesNeeded = Math.max(
+                      0,
+                      minimum - performance.comparisonSampleCount,
+                    );
+                    if (postReleaseSamplesNeeded === 0 && baselineSamplesNeeded === 0) {
+                      return {
+                        status: "sufficient" as const,
+                        minimumSamplesPerPeriod: minimum,
+                        postReleaseSamples: performance.currentSampleCount,
+                        baselineSamples: performance.comparisonSampleCount,
+                        postReleaseSamplesNeeded,
+                        baselineSamplesNeeded,
+                        recheckAt: null,
+                        recommendedWindowDays: windowDays,
+                      };
+                    }
+                    const postDurationEstimate =
+                      performance.currentSampleCount > 0
+                        ? (actualDuration * minimum) / performance.currentSampleCount
+                        : null;
+                    const baselineDurationEstimate =
+                      performance.comparisonSampleCount > 0
+                        ? (actualDuration * minimum) / performance.comparisonSampleCount
+                        : null;
+                    const canEstimate =
+                      (postReleaseSamplesNeeded === 0 || performance.currentSampleCount > 0) &&
+                      (baselineSamplesNeeded === 0 || performance.comparisonSampleCount > 0);
+                    const estimates = canEstimate
+                      ? [postDurationEstimate, baselineDurationEstimate].filter(
+                          (value): value is number => value !== null && Number.isFinite(value),
+                        )
+                      : [];
+                    const requiredDuration = estimates.length > 0 ? Math.max(...estimates) : null;
+                    const recommendedWindowDays =
+                      requiredDuration === null ? null : Math.ceil(requiredDuration / DAY_MS);
+                    const estimateWithinLimit =
+                      requiredDuration !== null &&
+                      recommendedWindowDays !== null &&
+                      recommendedWindowDays <= MAX_RELEASE_WINDOW_DAYS;
+                    const estimatedReadyTime =
+                      estimateWithinLimit && requiredDuration !== null
+                        ? releaseTime + Math.ceil(requiredDuration)
+                        : null;
+                    const recheckAt =
+                      estimatedReadyTime === null
+                        ? null
+                        : new Date(Math.max(now, estimatedReadyTime)).toISOString();
+                    return {
+                      status: recheckAt ? ("waiting" as const) : ("estimate_unavailable" as const),
+                      minimumSamplesPerPeriod: minimum,
+                      postReleaseSamples: performance.currentSampleCount,
+                      baselineSamples: performance.comparisonSampleCount,
+                      postReleaseSamplesNeeded,
+                      baselineSamplesNeeded,
+                      observedPostReleaseSamplesPerDay:
+                        Math.round(
+                          (performance.currentSampleCount / (actualDuration / DAY_MS)) * 100,
+                        ) / 100,
+                      observedBaselineSamplesPerDay:
+                        Math.round(
+                          (performance.comparisonSampleCount / (actualDuration / DAY_MS)) * 100,
+                        ) / 100,
+                      recheckAt,
+                      recommendedWindowDays: estimateWithinLimit ? recommendedWindowDays : null,
+                      reason: recheckAt
+                        ? recommendedWindowDays !== null && recommendedWindowDays > windowDays
+                          ? "Rerun with the recommended longer equal window at or after recheckAt."
+                          : "Rerun at or after recheckAt when the current window should contain enough samples."
+                        : performance.currentSampleCount === 0 ||
+                            performance.comparisonSampleCount === 0
+                          ? "A recheck date cannot be estimated from a zero observed sample rate."
+                          : "The estimated sample requirement exceeds the maximum 30-day release window.",
+                    };
+                  })()
+                : {
+                    status:
+                      performance.status === "not_requested"
+                        ? ("not_requested" as const)
+                        : ("unavailable" as const),
+                    recheckAt: null,
+                  };
+            const trafficSampleReadiness = {
+              status: traffic.dataQuality.comparisonBaselineZero
+                ? ("baseline_zero" as const)
+                : trafficEvidenceSufficient
+                  ? ("sufficient" as const)
+                  : ("insufficient" as const),
+              measure: "pageviews" as const,
+              minimumSamplesPerPeriod: MIN_RELEASE_TRAFFIC_PAGEVIEWS,
+              minimumVisitorsPerPeriod: MIN_RELEASE_AUDIENCE_SAMPLES,
+              minimumVisitsPerPeriod: MIN_RELEASE_AUDIENCE_SAMPLES,
+              postReleaseSamples: traffic.current.pageviews,
+              baselineSamples: traffic.comparison.pageviews,
+              postReleaseSamplesNeeded: Math.max(
+                0,
+                MIN_RELEASE_TRAFFIC_PAGEVIEWS - traffic.current.pageviews,
+              ),
+              baselineSamplesNeeded: Math.max(
+                0,
+                MIN_RELEASE_TRAFFIC_PAGEVIEWS - traffic.comparison.pageviews,
+              ),
+              postReleaseVisitors: traffic.current.visitors,
+              baselineVisitors: traffic.comparison.visitors,
+              postReleaseVisitorsNeeded: Math.max(
+                0,
+                MIN_RELEASE_AUDIENCE_SAMPLES - traffic.current.visitors,
+              ),
+              baselineVisitorsNeeded: Math.max(
+                0,
+                MIN_RELEASE_AUDIENCE_SAMPLES - traffic.comparison.visitors,
+              ),
+              postReleaseVisits: traffic.current.visits,
+              baselineVisits: traffic.comparison.visits,
+              postReleaseVisitsNeeded: Math.max(
+                0,
+                MIN_RELEASE_AUDIENCE_SAMPLES - traffic.current.visits,
+              ),
+              baselineVisitsNeeded: Math.max(
+                0,
+                MIN_RELEASE_AUDIENCE_SAMPLES - traffic.comparison.visits,
+              ),
+            };
             const dataStatus =
               traffic.dataStatus === "available" ||
               (performance.status === "available" &&
@@ -1204,35 +1466,155 @@ export const insightsModule: ToolModule = {
                     performance.comparisonSampleCount > 0)))
                 ? ("available" as const)
                 : traffic.dataStatus;
-            return {
+            const assessment = {
+              verdict,
+              evidenceVerdict,
+              trafficImpact,
+              trafficPattern,
+              trafficChangePercent: trafficPercent,
+              trafficEvidenceUsed: trafficEvidenceSufficient,
+              trafficChanges: {
+                pageviews: trafficPercent,
+                visitors: visitorsPercent,
+                visits: visitsPercent,
+                pageviewsPerVisit: pageviewsPerVisitPercent,
+              },
+              performanceRegressions,
+              performanceImprovements,
+              performanceScopeComparable,
+              confidence:
+                trafficEvidenceSufficient &&
+                performanceEvidenceSufficient &&
+                releaseContextStatus !== "confounded"
+                  ? ("medium" as const)
+                  : ("low" as const),
+              caveat:
+                releaseContextStatus === "confounded"
+                  ? "Other releases overlap the comparison windows, so the observed change cannot be isolated to the target release."
+                  : performanceScopeComparable
+                    ? "This is a before/after association. Campaigns, seasonality, outages, and unreported concurrent changes can produce the same pattern."
+                    : "This is a traffic-only before/after association for the selected channel. Core Web Vitals were excluded because Umami cannot apply the same channel scope.",
+            };
+            const releaseContext = {
+              status: releaseContextStatus,
+              historyProvided: otherReleases !== undefined,
+              competingReleases,
+              releasesOutsideAnalysisWindow:
+                parsedOtherReleases.length -
+                competingReleases.length -
+                duplicateTargetReleasesIgnored,
+              duplicateTargetReleasesIgnored,
+            };
+            const recommendedChecks = [
+              ...(performanceSampleInsufficient
+                ? [
+                    performanceSampleReadiness.recheckAt
+                      ? "Rerun release impact at recheckAt using recommendedWindowDays."
+                      : "Collect more Core Web Vital samples or use a longer supported equal window before assigning a performance direction.",
+                  ]
+                : []),
+              ...(trafficSampleReadiness.status === "baseline_zero"
+                ? [
+                    "Choose a baseline with non-zero traffic; percentage change from zero is undefined.",
+                  ]
+                : trafficSampleReadiness.status === "insufficient"
+                  ? [
+                      "Treat the traffic direction as low confidence until both periods reach the pageview threshold.",
+                    ]
+                  : []),
+              ...(postEnd < releaseTime + targetDuration - 1
+                ? [
+                    "Rerun after the requested post-release window is complete to restore weekday alignment.",
+                  ]
+                : []),
+              ...(releaseContextStatus === "unknown"
+                ? [
+                    "Provide neighboring deployments in otherReleases before attributing the change to this release.",
+                  ]
+                : releaseContextStatus === "confounded"
+                  ? [
+                      "Separate or annotate the overlapping releases before making an attribution claim.",
+                    ]
+                  : []),
+              ...(trafficPattern === "reduced_page_depth"
+                ? [
+                    "Inspect landing pages, exits, navigation changes, and duplicate/missing pageview tracking; audience volume did not materially decline.",
+                  ]
+                : trafficPattern === "mixed_audience_signals"
+                  ? [
+                      "Segment the audience by channel, device, country, and page before summarizing it.",
+                    ]
+                  : []),
+              ...(performanceRegressions.length > 0
+                ? [
+                    'Use detailLevel="full", then drill into page, device, and browser performance breakdowns for the regressed metrics.',
+                  ]
+                : []),
+            ];
+            const executiveSummary = {
+              verdict,
+              evidenceVerdict,
+              confidence: assessment.confidence,
+              traffic: {
+                impact: trafficImpact,
+                pattern: trafficPattern,
+                pageviewsChangePercent: trafficPercent,
+                visitorsChangePercent: visitorsPercent,
+                visitsChangePercent: visitsPercent,
+                pageviewsPerVisitChangePercent: pageviewsPerVisitPercent,
+                evidenceSufficient: trafficEvidenceSufficient,
+              },
+              performance: {
+                status: performanceSampleInsufficient
+                  ? ("insufficient_data" as const)
+                  : performance.status,
+                regressions: performanceRegressions,
+                improvements: performanceImprovements,
+              },
+              attribution: releaseContextStatus,
+              recheckAt: performanceSampleReadiness.recheckAt,
+              recommendedChecks,
+            };
+            const periods = { before: isoPeriod(pre), after: isoPeriod(post) };
+            const comparability = {
+              equalDuration: true,
+              dayOfWeekAligned:
+                postEnd === releaseTime + targetDuration - 1 && windowDays % 7 === 0,
+              note:
+                windowDays % 7 === 0
+                  ? "Full windows align weekdays when the post-release window is complete."
+                  : "Use a 7, 14, 21, or 28 day window to reduce weekday-mix bias.",
+            };
+            const sampleReadiness = {
+              traffic:
+                detailLevel === "summary" && trafficSampleReadiness.status === "sufficient"
+                  ? { status: "sufficient" as const }
+                  : trafficSampleReadiness,
+              performance:
+                detailLevel === "summary" && performanceSampleReadiness.status === "sufficient"
+                  ? { status: "sufficient" as const }
+                  : performanceSampleReadiness,
+              recheckAt: performanceSampleReadiness.recheckAt,
+            };
+            const summary = {
               dataStatus,
               website: websiteSummary(website),
               releaseAt: new Date(releaseTime).toISOString(),
               requestedWindowDays: windowDays,
               partialPostWindow: postEnd < releaseTime + targetDuration - 1,
-              periods: { before: isoPeriod(pre), after: isoPeriod(post) },
-              comparability: {
-                equalDuration: true,
-                dayOfWeekAligned:
-                  postEnd === releaseTime + targetDuration - 1 && windowDays % 7 === 0,
-                note:
-                  windowDays % 7 === 0
-                    ? "Full windows align weekdays when the post-release window is complete."
-                    : "Use a 7, 14, 21, or 28 day window to reduce weekday-mix bias.",
-              },
-              assessment: {
-                verdict,
-                trafficImpact,
-                trafficChangePercent: trafficPercent,
-                performanceRegressions,
-                performanceImprovements,
-                performanceScopeComparable,
-                confidence:
-                  trafficEvidenceSufficient && performanceEvidenceSufficient ? "medium" : "low",
-                caveat: performanceScopeComparable
-                  ? "This is a before/after association. Campaigns, seasonality, outages, and other concurrent changes can produce the same pattern."
-                  : "This is a traffic-only before/after association for the selected channel. Core Web Vitals were excluded because Umami cannot apply the same channel scope.",
-              },
+              detailLevel,
+              periods,
+              comparability,
+              executiveSummary,
+              releaseContext,
+              sampleReadiness,
+            };
+            if (detailLevel === "summary") {
+              return summary;
+            }
+            return {
+              ...summary,
+              assessment,
               traffic,
               trafficQuality: quality,
               performance,

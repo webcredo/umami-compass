@@ -225,7 +225,7 @@ export function createServer(options: CreateServerOptions): McpServer {
             role: "user",
             content: {
               type: "text",
-              text: `Analyze the impact of the release at ${releaseAt} for website ${websiteId}.${releaseDescription ? ` Release: ${releaseDescription}.` : ""} Use analyze_release_impact with a seven-day window. Lead with the verdict and confidence, then traffic, observed breakdown changes, Core Web Vitals, confounders, and concrete follow-up checks.`,
+              text: `Analyze the impact of the release at ${releaseAt} for website ${websiteId}.${releaseDescription ? ` Release: ${releaseDescription}.` : ""} Use analyze_release_impact with a seven-day window and detailLevel="summary". If other releases are known, pass them through otherReleases; never attribute overlapping changes only to the target release. Lead with insufficient data when the sample threshold is not met. Interpret visitors and visits as audience traffic, and pageviews per visit as browsing depth. Request detailLevel="full" only when drill-down evidence is needed.`,
             },
           },
         ],
