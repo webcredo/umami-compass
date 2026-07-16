@@ -4,6 +4,17 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-16
+
+### Added
+
+- Add compact release-impact summaries and recommended checks, caller-provided competing-release context, traffic and performance sample deficits, estimated `recheckAt`, and a recommended equal-window length when enough Core Web Vital samples can be projected.
+
+### Changed
+
+- Make insufficient Core Web Vital samples the primary release verdict, classify audience traffic from visitors and visits instead of pageviews alone, and report pageviews-per-visit changes as browsing-depth evidence.
+- Return compact release-impact output without breakdown fan-out by default while preserving the existing evidence payload behind `detailLevel="full"`.
+
 ## [0.3.1] - 2026-07-13
 
 ### Fixed

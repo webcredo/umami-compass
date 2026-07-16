@@ -577,7 +577,12 @@ describe("Umami Compass insights", () => {
     ["explain_traffic_change", { start: "2026-07-01", end: "2026-07-02", dimensions: ["device"] }],
     [
       "analyze_release_impact",
-      { releaseAt: "2026-07-01T00:00:00.000Z", windowDays: 7, dimensions: ["device"] },
+      {
+        releaseAt: "2026-07-01T00:00:00.000Z",
+        windowDays: 7,
+        dimensions: ["device"],
+        detailLevel: "full",
+      },
     ],
   ])("rejects %s channel fan-out inside match=any", async (name, arguments_) => {
     vi.useFakeTimers();
@@ -867,13 +872,13 @@ describe("Umami Compass insights", () => {
         return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
       }
       if (url.pathname.endsWith("/stats")) {
-        return json(totals(Number(url.searchParams.get("startAt")) >= releaseTime ? 120 : 100));
+        return json(totals(Number(url.searchParams.get("startAt")) >= releaseTime ? 1_200 : 1_000));
       }
       if (url.pathname.endsWith("/metrics")) {
         return json(
           Number(url.searchParams.get("startAt")) >= releaseTime
-            ? [{ x: "/checkout", y: 60 }]
-            : [{ x: "/checkout", y: 50 }],
+            ? [{ x: "/checkout", y: 600 }]
+            : [{ x: "/checkout", y: 500 }],
         );
       }
       if (url.pathname.endsWith("/reports/performance")) {
@@ -893,6 +898,7 @@ describe("Umami Compass insights", () => {
         releaseAt,
         windowDays: 7,
         dimensions: ["path"],
+        detailLevel: "full",
       },
     });
 
@@ -951,6 +957,7 @@ describe("Umami Compass insights", () => {
         windowDays: 7,
         dimensions: ["channel"],
         filters: { channel: "direct" },
+        detailLevel: "full",
       },
     });
 
@@ -1031,6 +1038,7 @@ describe("Umami Compass insights", () => {
         windowDays: 7,
         dimensions: ["path"],
         trafficSegment: "human",
+        detailLevel: "full",
       },
     });
 
@@ -1085,6 +1093,7 @@ describe("Umami Compass insights", () => {
         releaseAt,
         windowDays: 7,
         dimensions: ["path"],
+        detailLevel: "full",
       },
     });
 
@@ -1140,15 +1149,343 @@ describe("Umami Compass insights", () => {
         releaseAt,
         windowDays: 7,
         dimensions: ["path"],
+        detailLevel: "full",
       },
     });
 
     expect(result.structuredContent).toMatchObject({
       data: {
-        assessment: { performanceRegressions: [], confidence: "low" },
+        executiveSummary: {
+          verdict: "insufficient_data",
+          evidenceVerdict: "no_clear_change",
+          performance: { status: "insufficient_data" },
+        },
+        assessment: {
+          verdict: "insufficient_data",
+          performanceRegressions: [],
+          confidence: "low",
+        },
+        sampleReadiness: {
+          performance: {
+            postReleaseSamplesNeeded: 90,
+            baselineSamplesNeeded: 90,
+            recheckAt: null,
+            recommendedWindowDays: null,
+          },
+        },
         performance: {
           sampleSufficient: false,
           changes: { lcp: { impact: "inconclusive", material: false } },
+        },
+      },
+    });
+  });
+
+  it("treats a pageview drop with stable audience counts as reduced browsing depth", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-13T12:00:00.000Z");
+    const releaseAt = "2026-07-01T00:00:00.000Z";
+    const releaseTime = Date.parse(releaseAt);
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      if (url.pathname.endsWith("/stats")) {
+        return json(
+          Number(url.searchParams.get("startAt")) >= releaseTime
+            ? {
+                pageviews: 711,
+                visitors: 106,
+                visits: 106,
+                bounces: 30,
+                totaltime: 10_000,
+              }
+            : {
+                pageviews: 1_000,
+                visitors: 100,
+                visits: 100,
+                bounces: 30,
+                totaltime: 10_000,
+              },
+        );
+      }
+      if (url.pathname.endsWith("/metrics")) return json([]);
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_release_impact",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        releaseAt,
+        windowDays: 7,
+        dimensions: ["path"],
+        includePerformance: false,
+        otherReleases: [],
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        detailLevel: "summary",
+        periods: {
+          before: {
+            start: "2026-06-24T00:00:00.000Z",
+            end: "2026-06-30T23:59:59.999Z",
+          },
+          after: {
+            start: "2026-07-01T00:00:00.000Z",
+            end: "2026-07-07T23:59:59.999Z",
+          },
+        },
+        comparability: { equalDuration: true, dayOfWeekAligned: true },
+        executiveSummary: {
+          verdict: "no_clear_change",
+          traffic: {
+            impact: "neutral",
+            pattern: "reduced_page_depth",
+            pageviewsChangePercent: -28.9,
+            visitorsChangePercent: 6,
+            visitsChangePercent: 6,
+            pageviewsPerVisitChangePercent: -32.92,
+          },
+          attribution: "no_competing_releases_reported",
+          recommendedChecks: expect.arrayContaining([
+            "Inspect landing pages, exits, navigation changes, and duplicate/missing pageview tracking; audience volume did not materially decline.",
+          ]),
+        },
+        sampleReadiness: {
+          traffic: { status: "sufficient" },
+          performance: { status: "not_requested" },
+        },
+      },
+    });
+    expect((result.structuredContent as { data: Record<string, unknown> }).data).not.toHaveProperty(
+      "traffic",
+    );
+    expect(
+      fetchMock.mock.calls.some(([input]) => requestUrl(input).pathname.endsWith("/metrics")),
+    ).toBe(false);
+  });
+
+  it("marks an observed release change as confounded when another deployment overlaps", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-13T12:00:00.000Z");
+    const releaseAt = "2026-07-01T00:00:00.000Z";
+    const releaseTime = Date.parse(releaseAt);
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      if (url.pathname.endsWith("/stats")) {
+        return json(
+          plainTotals(Number(url.searchParams.get("startAt")) >= releaseTime ? 800 : 600),
+        );
+      }
+      if (url.pathname.endsWith("/metrics")) return json([]);
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_release_impact",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        releaseAt,
+        windowDays: 7,
+        dimensions: ["path"],
+        includePerformance: false,
+        otherReleases: [
+          { releaseAt, id: "target-duplicate" },
+          { releaseAt: "2026-07-03T00:00:00.000Z", id: "#1002" },
+          { releaseAt: "2026-06-01T00:00:00.000Z", id: "outside" },
+        ],
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        executiveSummary: {
+          verdict: "confounded",
+          evidenceVerdict: "traffic_change_only",
+          attribution: "confounded",
+        },
+        releaseContext: {
+          status: "confounded",
+          competingReleases: [{ releaseAt: "2026-07-03T00:00:00.000Z", id: "#1002" }],
+          releasesOutsideAnalysisWindow: 1,
+          duplicateTargetReleasesIgnored: 1,
+        },
+      },
+    });
+  });
+
+  it("estimates a recheck date for a partial window with a viable sample rate", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-02T12:00:00.000Z");
+    const releaseAt = "2026-07-01T00:00:00.000Z";
+    const releaseTime = Date.parse(releaseAt);
+    const fetchMock = vi.fn<Fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      if (url.pathname.endsWith("/stats")) return json(plainTotals(600));
+      if (url.pathname.endsWith("/metrics")) return json([]);
+      if (url.pathname.endsWith("/reports/performance")) {
+        const body = JSON.parse(String(init?.body)) as { parameters: { startDate: string } };
+        return json(
+          performanceSummary(
+            Date.parse(body.parameters.startDate) >= releaseTime ? 4_000 : 2_000,
+            50,
+          ),
+        );
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_release_impact",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        releaseAt,
+        windowDays: 7,
+        dimensions: ["path"],
+        otherReleases: [],
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        partialPostWindow: true,
+        executiveSummary: {
+          verdict: "insufficient_data",
+          recheckAt: "2026-07-04T00:00:00.000Z",
+        },
+        sampleReadiness: {
+          performance: {
+            status: "waiting",
+            postReleaseSamplesNeeded: 50,
+            baselineSamplesNeeded: 50,
+            recheckAt: "2026-07-04T00:00:00.000Z",
+            recommendedWindowDays: 3,
+          },
+          recheckAt: "2026-07-04T00:00:00.000Z",
+        },
+      },
+    });
+  });
+
+  it("does not invent a recheck date when the post-release sample rate is zero", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-02T12:00:00.000Z");
+    const releaseAt = "2026-07-01T00:00:00.000Z";
+    const releaseTime = Date.parse(releaseAt);
+    const fetchMock = vi.fn<Fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      if (url.pathname.endsWith("/stats")) return json(plainTotals(600));
+      if (url.pathname.endsWith("/metrics")) return json([]);
+      if (url.pathname.endsWith("/reports/performance")) {
+        const body = JSON.parse(String(init?.body)) as { parameters: { startDate: string } };
+        return json(
+          performanceSummary(
+            Date.parse(body.parameters.startDate) >= releaseTime ? 4_000 : 2_000,
+            0,
+          ),
+        );
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_release_impact",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        releaseAt,
+        windowDays: 7,
+        dimensions: ["path"],
+        otherReleases: [],
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        executiveSummary: { verdict: "insufficient_data", recheckAt: null },
+        sampleReadiness: {
+          performance: {
+            status: "estimate_unavailable",
+            postReleaseSamplesNeeded: 100,
+            baselineSamplesNeeded: 100,
+            recheckAt: null,
+            reason: "A recheck date cannot be estimated from a zero observed sample rate.",
+          },
+        },
+      },
+    });
+  });
+
+  it("returns insufficient data when traffic has a zero comparison baseline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-13T12:00:00.000Z");
+    const releaseAt = "2026-07-01T00:00:00.000Z";
+    const releaseTime = Date.parse(releaseAt);
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
+        return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
+      }
+      if (url.pathname.endsWith("/stats")) {
+        return json(plainTotals(Number(url.searchParams.get("startAt")) >= releaseTime ? 600 : 0));
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_release_impact",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        releaseAt,
+        windowDays: 7,
+        dimensions: ["path"],
+        includePerformance: false,
+        otherReleases: [],
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        executiveSummary: {
+          verdict: "insufficient_data",
+          traffic: {
+            impact: "neutral",
+            evidenceSufficient: false,
+            pageviewsChangePercent: null,
+          },
+          recommendedChecks: expect.arrayContaining([
+            "Choose a baseline with non-zero traffic; percentage change from zero is undefined.",
+          ]),
+        },
+        sampleReadiness: {
+          traffic: {
+            status: "baseline_zero",
+            postReleaseSamples: 600,
+            baselineSamples: 0,
+            baselineSamplesNeeded: 500,
+          },
         },
       },
     });
