@@ -4,6 +4,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-16
+
+### Fixed
+
+- Require 20 samples by default across performance breakdown dimensions, validate row counts and percentile ordering, distinguish insufficient samples from missing data, and expose upstream candidate-cap uncertainty instead of presenting an incomplete worst-page ranking as exhaustive.
+
 ## [0.4.0] - 2026-07-16
 
 ### Added

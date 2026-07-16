@@ -102,7 +102,7 @@ describe("Umami Compass MCP server", () => {
       enabledToolsets?: string[];
       version?: string;
     };
-    expect(capabilityData.version).toBe("0.4.0");
+    expect(capabilityData.version).toBe("0.4.1");
     expect(capabilityData.enabledToolsets).toEqual(["core", "insights"]);
     expect(JSON.stringify(capabilities.contents)).not.toContain("test-key");
   });
@@ -123,7 +123,7 @@ describe("Umami Compass MCP server", () => {
     expect(result.structuredContent).toMatchObject({
       data: {
         name: "umami-compass",
-        version: "0.4.0",
+        version: "0.4.1",
         access: "read-only",
         capabilities: {
           emptyReferrerIsolation: true,
@@ -568,15 +568,19 @@ describe("Umami Compass MCP server", () => {
     });
   });
 
-  it("filters invalid performance page rows and ranks numeric p75 values", async () => {
+  it("applies a validated 20-sample guard before ranking performance p75 values", async () => {
     const fetchMock = vi.fn<Fetch>().mockResolvedValue(
       Response.json({
         chart: [],
-        summary: { lcp: { p50: 100, p75: 150, p95: 200 }, count: 12 },
+        summary: { lcp: { p50: 100, p75: 150, p95: 200 }, count: 100 },
         pages: [
           { name: "/missing", p50: null, p75: null, p95: null, count: "1" },
-          { name: "/fast", p50: "80", p75: "100", p95: "140", count: "10" },
-          { name: "/slow", p50: "180", p75: "250", p95: "400", count: "2" },
+          { name: "/no-count", p50: "100", p75: "150", p95: "200" },
+          { name: "/fractional", p50: "100", p75: "150", p95: "200", count: "20.5" },
+          { name: "/bad-order", p50: "300", p75: "250", p95: "400", count: "30" },
+          { name: "/fast", p50: "80", p75: "100", p95: "140", count: "40" },
+          { name: "/edge", p50: "140", p75: "200", p95: "280", count: "20" },
+          { name: "/slow", p50: "180", p75: "250", p95: "400", count: "19" },
         ],
         pageTitles: [],
         devices: [],
@@ -599,13 +603,197 @@ describe("Umami Compass MCP server", () => {
 
     expect(result.structuredContent).toMatchObject({
       data: {
-        invalidItemsExcluded: 1,
+        dataStatus: "available",
+        candidateItemLimit: 500,
+        candidateItemsEvaluated: 7,
+        candidateItemsTruncated: false,
+        invalidItemsExcluded: 4,
+        insufficientSampleItemsExcluded: 1,
+        minimumSampleCount: 20,
+        minimumSampleCountOverridden: false,
         items: [
-          { name: "/slow", p50: 180, p75: 250, p95: 400, count: 2 },
-          { name: "/fast", p50: 80, p75: 100, p95: 140, count: 10 },
+          { name: "/edge", p50: 140, p75: 200, p95: 280, count: 20 },
+          { name: "/fast", p50: 80, p75: 100, p95: 140, count: 40 },
         ],
         itemsTruncated: false,
         totalItems: 2,
+      },
+      meta: { dataStatus: "available", truncated: false },
+    });
+  });
+
+  it("allows callers to override the performance page sample threshold", async () => {
+    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
+      Response.json({
+        chart: [],
+        summary: { lcp: { p50: 100, p75: 150, p95: 200 }, count: 12 },
+        pages: [
+          { name: "/fast", p50: "80", p75: "100", p95: "140", count: "10" },
+          { name: "/slow", p50: "180", p75: "250", p95: "400", count: "1" },
+        ],
+        pageTitles: [],
+        devices: [],
+        browsers: [],
+      }),
+    );
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_performance_breakdown",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        metric: "lcp",
+        dimension: "page",
+        minimumSampleCount: 1,
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        dataStatus: "available",
+        candidateItemLimit: 500,
+        candidateItemsEvaluated: 2,
+        candidateItemsTruncated: false,
+        invalidItemsExcluded: 0,
+        insufficientSampleItemsExcluded: 0,
+        minimumSampleCount: 1,
+        minimumSampleCountOverridden: true,
+        items: [
+          { name: "/slow", p50: 180, p75: 250, p95: 400, count: 1 },
+          { name: "/fast", p50: 80, p75: 100, p95: 140, count: 10 },
+        ],
+        totalItems: 2,
+      },
+    });
+  });
+
+  it("reports an insufficient-sample empty result instead of no data", async () => {
+    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
+      Response.json({
+        chart: [],
+        summary: { lcp: { p50: 100, p75: 150, p95: 200 }, count: 20 },
+        pages: [
+          { name: "/one", p50: 100, p75: 150, p95: 200, count: 1 },
+          { name: "/nineteen", p50: 150, p75: 220, p95: 300, count: 19 },
+        ],
+        pageTitles: [],
+        devices: [],
+        browsers: [],
+      }),
+    );
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_performance_breakdown",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        metric: "lcp",
+        dimension: "page",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        dataStatus: "empty",
+        emptyReason: "insufficient_sample_size",
+        candidateItemsEvaluated: 2,
+        invalidItemsExcluded: 0,
+        insufficientSampleItemsExcluded: 2,
+        items: [],
+        totalItems: 0,
+      },
+      meta: {
+        dataStatus: "empty",
+        emptyReason: "insufficient_sample_size",
+        truncated: false,
+      },
+    });
+  });
+
+  it("marks an empty filtered ranking unknown when Umami candidate coverage is capped", async () => {
+    const pages = Array.from({ length: 500 }, (_, index) => ({
+      name: `/page-${index}`,
+      p50: 100,
+      p75: 150 + index,
+      p95: 700,
+      count: 1,
+    }));
+    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
+      Response.json({
+        chart: [],
+        summary: { lcp: { p50: 100, p75: 150, p95: 700 }, count: 500 },
+        pages,
+        pageTitles: [],
+        devices: [],
+        browsers: [],
+      }),
+    );
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_performance_breakdown",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        metric: "lcp",
+        dimension: "page",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        dataStatus: "unknown",
+        candidateItemLimit: 500,
+        candidateItemsEvaluated: 500,
+        candidateItemsTruncated: true,
+        insufficientSampleItemsExcluded: 500,
+        items: [],
+        totalItems: 0,
+      },
+      meta: { dataStatus: "unknown", truncated: true },
+    });
+    expect(JSON.stringify(result.structuredContent)).not.toContain("emptyReason");
+  });
+
+  it("uses the same default sample policy for environment breakdowns", async () => {
+    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
+      Response.json({
+        chart: [],
+        summary: { lcp: { p50: 100, p75: 150, p95: 200 }, count: 21 },
+        pages: [],
+        pageTitles: [],
+        devices: [
+          { name: "rare", p50: 200, p75: 400, p95: 600, count: 1 },
+          { name: "desktop", p50: 100, p75: 150, p95: 200, count: 20 },
+        ],
+        browsers: [],
+      }),
+    );
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_performance_breakdown",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        metric: "lcp",
+        dimension: "device",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        candidateItemLimit: null,
+        candidateItemsTruncated: false,
+        insufficientSampleItemsExcluded: 1,
+        minimumSampleCount: 20,
+        items: [{ name: "desktop", p50: 100, p75: 150, p95: 200, count: 20 }],
       },
     });
   });
