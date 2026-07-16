@@ -13,7 +13,7 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.4.0` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.4.1` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
 > The `npx` examples follow the stable npm release channel and check it whenever the MCP process starts. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 
@@ -43,7 +43,7 @@ npx --yes --prefer-online umami-compass@latest
 
 `@latest` selects the stable npm channel and `--prefer-online` makes npm check the registry even when package metadata is cached. npm still reuses the cached package when that exact release is already present. Updates take effect the next time the MCP process starts; an already running local server cannot replace itself.
 
-Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.4.0`. Never use the preview channel for an unattended production setup.
+Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.4.1`. Never use the preview channel for an unattended production setup.
 
 ### Umami Cloud
 
@@ -107,6 +107,10 @@ The least-privilege default enables `core,insights`: eight primitive aggregate t
 | `heatmaps` | `get_heatmap` (click/scroll pages and bounded detail points) | No |
 
 Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has 14 aggregate tools; `all` has 37. Multi-website insights are bounded to 50 websites with four concurrent website workers. High-cardinality report, performance, heatmap, channel fan-out, and activity results carry explicit limits and truncation metadata.
+
+`get_performance_breakdown` requires at least 20 samples per row by default for page, page-title, device, and browser rankings. This is an exploratory p75 quality guard—enough to put at least five observations in the upper quartile—not a claim of statistical significance. Set `minimumSampleCount` explicitly to tighten the guard or lower it to `1` to include every otherwise valid row. Rows with missing, non-integer, or invalid counts are malformed rather than treated as sufficiently sampled.
+
+Umami 3.2 caps page, page-title, and browser candidates at 500 before Compass can apply the sample guard. Breakdown responses therefore report the effective minimum, excluded-row counts, candidate coverage, and whether that upstream cap may make the filtered ranking incomplete. If all complete candidates are undersized, `emptyReason` is `insufficient_sample_size`; if the candidate cap prevents that conclusion, `dataStatus` is `unknown`.
 
 Successful tool responses preserve the existing `data` field and add a common `meta` envelope. Depending on the request it includes `dataStatus`, `emptyReason`, `websiteId`, `requestedRange`, `timezone`, and `truncated`, allowing clients to distinguish a valid empty range from a disabled feature or a truncated result.
 

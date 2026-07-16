@@ -3,7 +3,7 @@
   "name": "io.github.webcredo/umami-compass",
   "title": "Umami Compass",
   "description": "Secure Umami Analytics MCP server for Cloud and self-hosted deployments",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "websiteUrl": "https://github.com/webcredo/umami-compass",
   "repository": {
     "url": "https://github.com/webcredo/umami-compass",
@@ -15,7 +15,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "umami-compass",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
