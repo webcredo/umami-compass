@@ -1,9 +1,16 @@
 import type { z } from "zod";
 import type { UmamiClient } from "../api/client.js";
 import { toSafeError, UmamiError } from "../api/errors.js";
-import type { PerformanceMetric, Query, Website } from "../api/types.js";
+import type { Query, Website } from "../api/types.js";
 import type { TimeInput } from "../time.js";
 import { parseTimeRange } from "../time.js";
+import {
+  auditPerformanceFilters,
+  comparePerformanceSummaries,
+  DEFAULT_COMPARISON_MINIMUM_EVENT_COUNT,
+  makePerformanceRequest,
+  parsePerformanceReport,
+} from "./performance-utils.js";
 import {
   appendReferrerExclusions,
   type filtersSchema,
@@ -848,57 +855,6 @@ export async function compareTraffic(client: UmamiClient, input: TrafficComparis
   };
 }
 
-const WEB_VITAL_THRESHOLDS: Record<PerformanceMetric, [number, number]> = {
-  lcp: [2_500, 4_000],
-  inp: [200, 500],
-  cls: [0.1, 0.25],
-  fcp: [1_800, 3_000],
-  ttfb: [800, 1_800],
-};
-
-const MIN_PERFORMANCE_SAMPLES = 100;
-const MIN_PERFORMANCE_CHANGE_PERCENT = 5;
-const MIN_PERFORMANCE_ABSOLUTE_CHANGE: Record<PerformanceMetric, number> = {
-  lcp: 100,
-  inp: 20,
-  cls: 0.02,
-  fcp: 100,
-  ttfb: 50,
-};
-
-function vitalRating(
-  metric: PerformanceMetric,
-  value: number,
-): "good" | "needs_improvement" | "poor" {
-  const [good, poor] = WEB_VITAL_THRESHOLDS[metric];
-  return value <= good ? "good" : value <= poor ? "needs_improvement" : "poor";
-}
-
-function performanceSummary(value: unknown) {
-  if (!isRecord(value) || !isRecord(value.summary)) {
-    throw new UmamiError("INVALID_RESPONSE", "Umami returned invalid performance summary data.");
-  }
-  const summary = value.summary;
-  const count = finiteNumber(summary.count);
-  if (count === undefined) {
-    throw new UmamiError("INVALID_RESPONSE", "Umami returned invalid performance summary data.");
-  }
-  const metrics = Object.fromEntries(
-    (Object.keys(WEB_VITAL_THRESHOLDS) as PerformanceMetric[]).map((metric) => {
-      const row = summary[metric];
-      const p75 = isRecord(row) ? finiteNumber(row.p75) : undefined;
-      if (p75 === undefined) {
-        throw new UmamiError(
-          "INVALID_RESPONSE",
-          "Umami returned invalid performance summary data.",
-        );
-      }
-      return [metric, { p75, rating: vitalRating(metric, p75) }];
-    }),
-  ) as Record<PerformanceMetric, { p75: number; rating: ReturnType<typeof vitalRating> }>;
-  return { count, metrics };
-}
-
 export async function comparePerformance(
   client: UmamiClient,
   input: {
@@ -906,6 +862,7 @@ export async function comparePerformance(
     current: TimePeriod;
     excludedReferrers?: readonly string[];
     filters?: Filters;
+    maxRangeDays: number;
     signal?: AbortSignal;
     timezone: string;
     websiteId: string;
@@ -915,77 +872,53 @@ export async function comparePerformance(
     channel: "all" as const,
     excludedReferrers: [...(input.excludedReferrers ?? [])],
   };
+  if (scope.excludedReferrers.length > 0) {
+    return {
+      status: "scope_mismatch" as const,
+      scope,
+      reason:
+        "Umami 3.2 performance events do not retain referrer domains, so referral-spam exclusions cannot be applied to Core Web Vitals without widening or corrupting the requested scope.",
+    };
+  }
+  const filterAudit = auditPerformanceFilters(input.filters);
+  if (filterAudit.scope.ignoredFilters.length > 0) {
+    return {
+      status: "scope_mismatch" as const,
+      scope: { ...scope, filterScope: filterAudit.scope },
+      reason:
+        "One or more requested filters are not supported by the Umami 3.2 performance event schema.",
+    };
+  }
   try {
-    const { excludeBounce, ...filters } = analysisFilters(input.filters, input.excludedReferrers);
-    const request = (period: TimePeriod) => ({
-      websiteId: input.websiteId,
-      type: "performance" as const,
-      parameters: {
-        startDate: new Date(period.startAt).toISOString(),
-        endDate: new Date(period.endAt).toISOString(),
-        metric: "lcp" as const,
+    const request = (period: TimePeriod) =>
+      makePerformanceRequest({
+        websiteId: input.websiteId,
+        start: period.startAt,
+        end: period.endAt,
+        maxRangeDays: input.maxRangeDays,
+        metric: "lcp",
         timezone: input.timezone,
-        unit: "day" as const,
-      },
-      filters: {
-        ...filters,
-        ...(excludeBounce === true ? { excludeBounce: "true" } : {}),
-      },
-    });
+        unit: "day",
+        filters: filterAudit.effectiveFilters,
+      });
     const [currentResult, comparisonResult] = await Promise.all([
       client.runReport(request(input.current), input.signal),
       client.runReport(request(input.comparison), input.signal),
     ]);
-    const current = performanceSummary(currentResult);
-    const comparison = performanceSummary(comparisonResult);
-    const sampleSufficient =
-      current.count >= MIN_PERFORMANCE_SAMPLES && comparison.count >= MIN_PERFORMANCE_SAMPLES;
-    const changes = Object.fromEntries(
-      (Object.keys(WEB_VITAL_THRESHOLDS) as PerformanceMetric[]).map((metric) => {
-        const currentP75 = current.metrics[metric].p75;
-        const comparisonP75 = comparison.metrics[metric].p75;
-        const absolute = currentP75 - comparisonP75;
-        const percent = percentChange(currentP75, comparisonP75);
-        const ratingOrder = { good: 0, needs_improvement: 1, poor: 2 } as const;
-        const currentRating = current.metrics[metric].rating;
-        const comparisonRating = comparison.metrics[metric].rating;
-        const ratingDelta = ratingOrder[currentRating] - ratingOrder[comparisonRating];
-        const materiallyChanged =
-          Math.abs(absolute) >= MIN_PERFORMANCE_ABSOLUTE_CHANGE[metric] &&
-          percent !== null &&
-          Math.abs(percent) >= MIN_PERFORMANCE_CHANGE_PERCENT;
-        const impact = !sampleSufficient
-          ? "inconclusive"
-          : ratingDelta > 0 || (absolute > 0 && materiallyChanged)
-            ? "regressed"
-            : ratingDelta < 0 || (absolute < 0 && materiallyChanged)
-              ? "improved"
-              : "unchanged";
-        return [
-          metric,
-          {
-            currentP75,
-            comparisonP75,
-            absolute,
-            percent,
-            impact,
-            material: impact === "regressed" || impact === "improved",
-            currentRating,
-            comparisonRating,
-          },
-        ];
-      }),
+    const comparison = comparePerformanceSummaries(
+      parsePerformanceReport(currentResult).summary,
+      parsePerformanceReport(comparisonResult).summary,
+      DEFAULT_COMPARISON_MINIMUM_EVENT_COUNT,
     );
-    const status =
-      current.count === 0 && comparison.count === 0 ? ("empty" as const) : ("available" as const);
     return {
-      status,
-      scope,
-      currentSampleCount: current.count,
-      comparisonSampleCount: comparison.count,
-      minimumSampleCount: MIN_PERFORMANCE_SAMPLES,
-      sampleSufficient,
-      changes,
+      status: comparison.status,
+      scope: { ...scope, filterScope: filterAudit.scope },
+      currentSampleCount: comparison.current.performanceEventCount,
+      comparisonSampleCount: comparison.comparison.performanceEventCount,
+      minimumSampleCount: comparison.minimumEventCount,
+      sampleSufficient: comparison.eventCountSufficient,
+      confidence: comparison.confidence,
+      changes: comparison.changes,
     };
   } catch (error) {
     return { status: "unavailable", scope, error: toSafeError(error) };

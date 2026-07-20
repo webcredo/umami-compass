@@ -90,13 +90,14 @@ afterEach(async () => {
 });
 
 describe("Umami Compass insights", () => {
-  it("exposes six bounded read-only insight workflows", async () => {
+  it("exposes seven bounded read-only insight workflows", async () => {
     const client = await connect(vi.fn<Fetch>());
     const result = await client.listTools();
 
     expect(result.tools.map(({ name }) => name)).toEqual([
       "resolve_website",
       "get_portfolio_overview",
+      "analyze_performance_portfolio",
       "explain_traffic_change",
       "compare_traffic_series",
       "analyze_release_impact",
@@ -161,6 +162,88 @@ describe("Umami Compass insights", () => {
       },
       meta: { dataStatus: "available" },
     });
+  });
+
+  it("analyzes portfolio Web Vitals with coverage, confidence and bounded drill-down", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/websites")) {
+        return json(websitePage([{ id: WEBSITE_ID, name: "Store", domain: "store.example" }]));
+      }
+      if (url.pathname.endsWith("/teams")) return json(websitePage([]));
+      if (url.pathname.endsWith("/reports/performance")) {
+        const body = JSON.parse(String(init?.body)) as { parameters: { startDate: string } };
+        const current = Date.parse(body.parameters.startDate) >= Date.parse("2026-07-01");
+        const lcp = current ? 3_000 : 2_000;
+        return json({
+          ...performanceSummary(lcp, current ? 2_600 : 2_400),
+          pages: [
+            { name: "/casino/example", p50: lcp - 500, p75: lcp, p95: lcp + 500, count: 500 },
+          ],
+          devices: [{ name: "Desktop", p50: lcp - 500, p75: lcp, p95: lcp + 500, count: 600 }],
+        });
+      }
+      if (url.pathname.endsWith("/stats")) {
+        const current = Number(url.searchParams.get("startAt")) >= Date.parse("2026-07-01");
+        return json(plainTotals(current ? 3_000 : 2_800));
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_performance_portfolio",
+      arguments: {
+        start: "2026-07-01",
+        end: "2026-07-07",
+        metrics: ["lcp", "ttfb"],
+        detailMetric: "lcp",
+        detailSiteLimit: 1,
+      },
+    });
+
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const data = (result.structuredContent as { data?: unknown } | undefined)?.data as {
+      coverage: { failedWebsites: number; successfulWebsites: number };
+      dataStatus: string;
+      details: Array<{
+        devices: { dataStatus: string };
+        metric: string;
+        pages: { dataStatus: string };
+        website: { id: string };
+      }>;
+      leaders: { regressions: Array<{ impact: string; metric: string; website: { id: string } }> };
+      sites: Array<{
+        comparison: { confidence: string };
+        coverage: {
+          currentPageviews: number;
+          currentPerformanceEventsPerPageviewPercent: number;
+        };
+        website: { id: string };
+      }>;
+    };
+    expect(data.dataStatus).toBe("available");
+    expect(data.coverage).toMatchObject({ successfulWebsites: 1, failedWebsites: 0 });
+    expect(data.leaders.regressions[0]).toMatchObject({
+      website: { id: WEBSITE_ID },
+      metric: "lcp",
+      impact: "regressed",
+    });
+    expect(data.details[0]).toMatchObject({
+      website: { id: WEBSITE_ID },
+      metric: "lcp",
+      pages: { dataStatus: "available" },
+      devices: { dataStatus: "available" },
+    });
+    expect(data.sites[0]).toMatchObject({
+      website: { id: WEBSITE_ID },
+      coverage: { currentPageviews: 3_000 },
+      comparison: { confidence: "high" },
+    });
+    expect(data.sites[0]?.coverage.currentPerformanceEventsPerPageviewPercent).toBeCloseTo(
+      86.67,
+      1,
+    );
   });
 
   it("builds a portfolio overview with leaders, stale tracking, and anomalies", async () => {
@@ -989,12 +1072,12 @@ describe("Umami Compass insights", () => {
     ).toBe(false);
   });
 
-  it("applies human-traffic exclusions to both release traffic and performance", async () => {
+  it("does not pretend referral exclusions can be applied to performance events", async () => {
     vi.useFakeTimers();
     vi.setSystemTime("2026-07-13T12:00:00.000Z");
     const releaseAt = "2026-07-01T00:00:00.000Z";
     const releaseTime = Date.parse(releaseAt);
-    const fetchMock = vi.fn<Fetch>(async (input, init) => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
       const url = requestUrl(input);
       if (url.pathname.endsWith(`/websites/${WEBSITE_ID}`)) {
         return json({ id: WEBSITE_ID, name: "Store", domain: "store.example" });
@@ -1022,9 +1105,7 @@ describe("Umami Compass insights", () => {
         return json([]);
       }
       if (url.pathname.endsWith("/reports/performance")) {
-        const body = JSON.parse(String(init?.body)) as { filters: Record<string, unknown> };
-        expect(body.filters.domain1).toBe("neq.xpwesthmfqphh.com");
-        return json(performanceSummary(2_000));
+        throw new Error("Performance must not be queried with an unsupported referrer scope.");
       }
       throw new Error(`Unexpected URL: ${url.href}`);
     });
@@ -1052,7 +1133,7 @@ describe("Umami Compass insights", () => {
           },
         },
         performance: {
-          status: "available",
+          status: "scope_mismatch",
           scope: {
             channel: "all",
             excludedReferrers: ["xpwesthmfqphh.com"],

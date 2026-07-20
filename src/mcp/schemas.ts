@@ -166,6 +166,37 @@ function validateFilterBudget(filters: Record<string, unknown>, context: z.Refin
 
 export const filtersSchema = z.object(filterFields).strict().superRefine(validateFilterBudget);
 
+// Performance events in Umami 3.2 persist the page identity and environment
+// dimensions below on both supported database backends. Other general filters
+// either target fields that are absent from performance events or are parsed by
+// Umami without being applied by the performance report (notably
+// excludeBounce). Keep this schema deliberately narrower than filtersSchema so
+// a requested scope can never be weakened silently.
+const performanceFilterFields = {
+  browser: filterFields.browser,
+  city: filterFields.city,
+  cohort: filterFields.cohort,
+  country: filterFields.country,
+  device: filterFields.device,
+  language: filterFields.language,
+  match: filterFields.match,
+  os: filterFields.os,
+  path: filterFields.path,
+  region: filterFields.region,
+  title: filterFields.title,
+};
+
+export const performanceFiltersSchema = z
+  .object(performanceFilterFields)
+  .strict()
+  .superRefine(validateFilterBudget);
+
+const { path: _routePath, ...routePerformanceFilterFields } = performanceFilterFields;
+export const routePerformanceFiltersSchema = z
+  .object(routePerformanceFilterFields)
+  .strict()
+  .superRefine(validateFilterBudget);
+
 export const TRAFFIC_CHANNELS = [
   "direct",
   "paidAds",

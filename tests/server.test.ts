@@ -14,6 +14,7 @@ function requestUrl(input: Parameters<Fetch>[0]): URL {
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(
     connected.splice(0).map(({ client, server }) => Promise.all([client.close(), server.close()])),
   );
@@ -63,7 +64,7 @@ describe("Umami Compass MCP server", () => {
     const client = await connect(vi.fn<Fetch>(), "all");
     const result = await client.listTools();
 
-    expect(result.tools).toHaveLength(37);
+    expect(result.tools).toHaveLength(42);
     expect(result.tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
     expect(
       result.tools.some((tool) => /^(create|update|delete|reset|share|save|send)_/.test(tool.name)),
@@ -102,9 +103,53 @@ describe("Umami Compass MCP server", () => {
       enabledToolsets?: string[];
       version?: string;
     };
-    expect(capabilityData.version).toBe("0.4.1");
+    expect(capabilityData.version).toBe("0.5.0");
     expect(capabilityData.enabledToolsets).toEqual(["core", "insights"]);
     expect(JSON.stringify(capabilities.contents)).not.toContain("test-key");
+  });
+
+  it("sanitizes website discovery for both the tool and resource", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/websites")) {
+        return Response.json({
+          data: [
+            {
+              id: WEBSITE_ID,
+              name: "Store",
+              domain: "store.example",
+              userId: "internal-user",
+              teamId: "internal-team",
+              createdBy: { email: "owner@example.com" },
+            },
+          ],
+          count: 1,
+          page: 1,
+          pageSize: 100,
+        });
+      }
+      if (url.pathname.endsWith("/teams")) {
+        return Response.json({ data: [], count: 0, page: 1, pageSize: 100 });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock, "core");
+
+    const [toolResult, resourceResult] = await Promise.all([
+      client.callTool({ name: "list_websites", arguments: { page: 1, pageSize: 20 } }),
+      client.readResource({ uri: "umami://websites" }),
+    ]);
+
+    expect(toolResult.structuredContent).toMatchObject({
+      data: {
+        data: [{ id: WEBSITE_ID, name: "Store", domain: "store.example" }],
+        count: 1,
+      },
+    });
+    const serialized = JSON.stringify([toolResult.structuredContent, resourceResult.contents]);
+    expect(serialized).not.toContain("internal-user");
+    expect(serialized).not.toContain("internal-team");
+    expect(serialized).not.toContain("owner@example.com");
   });
 
   it("returns local server version and feature capabilities without an upstream request", async () => {
@@ -123,7 +168,7 @@ describe("Umami Compass MCP server", () => {
     expect(result.structuredContent).toMatchObject({
       data: {
         name: "umami-compass",
-        version: "0.4.1",
+        version: "0.5.0",
         access: "read-only",
         capabilities: {
           emptyReferrerIsolation: true,
@@ -535,6 +580,10 @@ describe("Umami Compass MCP server", () => {
     expect(tools.tools.map(({ name }) => name)).toEqual([
       "get_web_vitals",
       "get_performance_breakdown",
+      "compare_web_vitals",
+      "compare_performance_breakdown",
+      "get_performance_cross_tab",
+      "get_route_group_performance",
     ]);
 
     const result = await client.callTool({
@@ -566,6 +615,309 @@ describe("Umami Compass MCP server", () => {
       type: "performance",
       parameters: { metric: "lcp", timezone: "UTC" },
     });
+  });
+
+  it("treats an empty performance summary as empty instead of perfect", async () => {
+    const emptyMetric = { p50: 0, p75: 0, p95: 0 };
+    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
+      Response.json({
+        chart: [],
+        summary: {
+          lcp: emptyMetric,
+          inp: emptyMetric,
+          cls: emptyMetric,
+          fcp: emptyMetric,
+          ttfb: emptyMetric,
+          count: 0,
+        },
+        pages: [],
+        pageTitles: [],
+        devices: [],
+        browsers: [],
+      }),
+    );
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_web_vitals",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        metric: "lcp",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        dataStatus: "empty",
+        emptyReason: "no_data_in_range",
+        summary: {
+          performanceEventCount: 0,
+          metrics: {
+            lcp: { p75: null, rating: "unavailable", dataStatus: "empty" },
+          },
+        },
+      },
+      meta: { dataStatus: "empty", emptyReason: "no_data_in_range" },
+    });
+  });
+
+  it("marks the current incomplete performance bucket and unavailable bucket counts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-03T12:00:00.000Z");
+    const fetchMock = vi.fn<Fetch>().mockResolvedValue(
+      Response.json({
+        chart: [{ t: "2026-07-03T00:00:00Z", p50: 100, p75: 150, p95: 200 }],
+        summary: { lcp: { p50: 100, p75: 150, p95: 200 }, count: 10 },
+        pages: [],
+        pageTitles: [],
+        devices: [],
+        browsers: [],
+      }),
+    );
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_web_vitals",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-03",
+        end: "2026-07-03",
+        metric: "lcp",
+        unit: "day",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        chart: {
+          items: [{ partial: true, count: null }],
+          sampleCounts: { status: "unavailable_upstream", pointsWithCount: 0 },
+        },
+      },
+    });
+  });
+
+  it("rejects performance filters that Umami parses without applying", async () => {
+    const fetchMock = vi.fn<Fetch>();
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_web_vitals",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-02",
+        metric: "lcp",
+        filters: { excludeBounce: true },
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("compares Web Vital summaries with explicit event-count confidence", async () => {
+    const fetchMock = vi.fn<Fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        parameters: { startDate: string };
+      };
+      const current = Date.parse(body.parameters.startDate) >= Date.parse("2026-07-01");
+      const lcp = current ? 3_000 : 2_000;
+      return Response.json({
+        chart: [],
+        summary: {
+          lcp: { p50: lcp - 500, p75: lcp, p95: lcp + 500 },
+          inp: { p50: 100, p75: 150, p95: 250 },
+          cls: { p50: 0.05, p75: 0.08, p95: 0.2 },
+          fcp: { p50: 1_000, p75: 1_500, p95: 2_000 },
+          ttfb: { p50: 300, p75: 500, p95: 900 },
+          count: current ? 2_600 : 2_400,
+        },
+        pages: [],
+        pageTitles: [],
+        devices: [],
+        browsers: [],
+      });
+    });
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "compare_web_vitals",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-07",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        status: "available",
+        confidence: "high",
+        current: { performanceEventCount: 2_600 },
+        comparison: { performanceEventCount: 2_400 },
+        changes: {
+          lcp: { currentP75: 3_000, comparisonP75: 2_000, impact: "regressed" },
+        },
+      },
+    });
+  });
+
+  it("aligns performance breakdown rows across periods", async () => {
+    const fetchMock = vi.fn<Fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        parameters: { startDate: string };
+      };
+      const current = Date.parse(body.parameters.startDate) >= Date.parse("2026-07-01");
+      const pages = current
+        ? [
+            { name: "/shared", p50: 2_000, p75: 3_000, p95: 4_000, count: 200 },
+            { name: "/new", p50: 1_000, p75: 1_500, p95: 2_000, count: 100 },
+          ]
+        : [
+            { name: "/shared", p50: 1_000, p75: 2_000, p95: 3_000, count: 180 },
+            { name: "/gone", p50: 1_000, p75: 1_500, p95: 2_000, count: 90 },
+          ];
+      return Response.json({
+        chart: [],
+        summary: { lcp: { p50: 1_000, p75: 2_000, p95: 3_000 }, count: 300 },
+        pages,
+        pageTitles: [],
+        devices: [],
+        browsers: [],
+      });
+    });
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "compare_performance_breakdown",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-07",
+        metric: "lcp",
+        dimension: "page",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        dataStatus: "available",
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            name: "/shared",
+            currentP75: 3_000,
+            comparisonP75: 2_000,
+            status: "comparable",
+            impact: "regressed",
+          }),
+          expect.objectContaining({ name: "/new", status: "new_in_current" }),
+          expect.objectContaining({ name: "/gone", status: "missing_current" }),
+        ]),
+      },
+    });
+  });
+
+  it("derives a bounded device by page performance cross-tab", async () => {
+    const fetchMock = vi.fn<Fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { filters: Record<string, string> };
+      const device = body.filters.device;
+      return Response.json({
+        chart: [],
+        summary: { lcp: { p50: 1_000, p75: 2_000, p95: 3_000 }, count: 200 },
+        pages: device
+          ? [{ name: `/${device}`, p50: 1_000, p75: 2_000, p95: 3_000, count: 100 }]
+          : [],
+        pageTitles: [],
+        devices: device
+          ? []
+          : [
+              { name: "Desktop", p50: 1_000, p75: 2_000, p95: 3_000, count: 120 },
+              { name: "Mobile", p50: 1_500, p75: 2_500, p95: 3_500, count: 80 },
+            ],
+        browsers: [],
+      });
+    });
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_performance_cross_tab",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-07",
+        metric: "lcp",
+        candidateDimension: "device",
+        breakdownDimension: "page",
+        candidateLimit: 2,
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      data: {
+        dataStatus: "available",
+        groups: [
+          { candidate: { name: "Desktop" }, breakdown: { dataStatus: "available" } },
+          { candidate: { name: "Mobile" }, breakdown: { dataStatus: "available" } },
+        ],
+        dataQuality: { nativeCrossTab: false, fanoutRequests: 2 },
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("queries route groups directly instead of averaging URL percentiles", async () => {
+    const fetchMock = vi.fn<Fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        filters: { path: string };
+        parameters: { startDate: string };
+      };
+      const current = Date.parse(body.parameters.startDate) >= Date.parse("2026-07-01");
+      const lcp = body.filters.path.includes("casinos") ? (current ? 4_000 : 3_000) : 2_000;
+      return Response.json({
+        chart: [],
+        summary: { lcp: { p50: lcp - 500, p75: lcp, p95: lcp + 500 }, count: 200 },
+        pages: [],
+        pageTitles: [],
+        devices: [],
+        browsers: [],
+      });
+    });
+    const client = await connect(fetchMock, "performance");
+
+    const result = await client.callTool({
+      name: "get_route_group_performance",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-07",
+        metric: "lcp",
+        routeGroups: [
+          { name: "casino", pathRegex: "^/casinos/[^/]+$" },
+          { name: "bonus", pathRegex: "^/bonus/[^/]+$" },
+        ],
+      },
+    });
+
+    const data = (result.structuredContent as { data?: unknown } | undefined)?.data as {
+      dataQuality: { fanoutRequests: number; percentileAggregation: string };
+      dataStatus: string;
+      groups: Array<{
+        changes: { lcp: { comparisonP75: number; currentP75: number } };
+        name: string;
+      }>;
+    };
+    expect(data.dataStatus).toBe("available");
+    expect(data.groups.find(({ name }) => name === "casino")).toMatchObject({
+      changes: { lcp: { currentP75: 4_000, comparisonP75: 3_000 } },
+    });
+    expect(data.dataQuality).toMatchObject({
+      fanoutRequests: 4,
+      percentileAggregation: "direct_filtered_query",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("applies a validated 20-sample guard before ranking performance p75 values", async () => {

@@ -19,6 +19,18 @@ import {
   totalsChanges,
   type WebsiteTotals,
 } from "../insights-utils.js";
+import {
+  alignPerformanceBreakdowns,
+  comparePerformanceSummaries,
+  DEFAULT_BREAKDOWN_MINIMUM_SAMPLE_COUNT,
+  dimensionKeys,
+  makePerformanceRequest,
+  PERFORMANCE_METRICS,
+  PERFORMANCE_THRESHOLDS,
+  parsePerformanceReport,
+  performanceFilterScope,
+  upstreamCandidateLimits,
+} from "../performance-utils.js";
 import { requirePagedResponse } from "../report-utils.js";
 import { READ_ONLY_ANNOTATIONS, runTool } from "../result.js";
 import {
@@ -27,6 +39,7 @@ import {
   outputSchema,
   pageviewsDataSchema,
   parseUpstream,
+  performanceFiltersSchema,
   rangeQuery,
   segmentedFiltersSchema,
   serializeFilters,
@@ -42,8 +55,10 @@ import {
   type TrafficChannel,
   type TrafficPeriod,
 } from "../traffic-segmentation.js";
+import { websiteSummary } from "../websites.js";
 
 const trafficDimensionSchema = z.enum(TRAFFIC_DIMENSIONS);
+const performanceMetricSchema = z.enum(PERFORMANCE_METRICS);
 const websiteLimitSchema = z.number().int().min(1).max(50).default(25);
 const MIN_RELEASE_TRAFFIC_CHANGE_PERCENT = 10;
 const MIN_RELEASE_TRAFFIC_PAGEVIEWS = 500;
@@ -158,15 +173,6 @@ function websitePage(value: unknown): PagedResponse<Website> {
     throw new UmamiError("INVALID_RESPONSE", "Umami returned an invalid website list.");
   }
   return page as PagedResponse<Website>;
-}
-
-function websiteSummary(website: Website) {
-  return {
-    id: website.id,
-    ...(typeof website.name === "string" ? { name: website.name } : {}),
-    ...(typeof website.domain === "string" ? { domain: website.domain } : {}),
-    ...(typeof website.teamId === "string" ? { teamId: website.teamId } : {}),
-  };
 }
 
 function normalizeDomain(value: string): string {
@@ -321,6 +327,96 @@ async function portfolioSite(
                   : "drop",
           }
         : null,
+    };
+  } catch (error) {
+    return {
+      status: "unavailable" as const,
+      website: websiteSummary(website),
+      error: toSafeError(error),
+    };
+  }
+}
+
+async function performancePortfolioSite(
+  client: Parameters<typeof fetchWebsiteStats>[0],
+  website: Website,
+  currentPeriod: TimePeriod,
+  baselinePeriod: TimePeriod,
+  input: {
+    filters?: Record<string, unknown>;
+    maxRangeDays: number;
+    metric: (typeof PERFORMANCE_METRICS)[number];
+    minimumEventCount: number;
+    signal?: AbortSignal;
+    timezone: string;
+  },
+) {
+  try {
+    const performanceRequest = (period: TimePeriod) =>
+      makePerformanceRequest({
+        websiteId: website.id,
+        start: period.startAt,
+        end: period.endAt,
+        maxRangeDays: input.maxRangeDays,
+        metric: input.metric,
+        timezone: input.timezone,
+        unit: "day",
+        filters: input.filters,
+      });
+    const [currentReport, comparisonReport, currentStats, comparisonStats] = await Promise.all([
+      client
+        .runReport(performanceRequest(currentPeriod), input.signal)
+        .then(parsePerformanceReport),
+      client
+        .runReport(performanceRequest(baselinePeriod), input.signal)
+        .then(parsePerformanceReport),
+      fetchWebsiteStats(
+        client,
+        website.id,
+        currentPeriod,
+        input.maxRangeDays,
+        input.filters,
+        input.signal,
+      ),
+      fetchWebsiteStats(
+        client,
+        website.id,
+        baselinePeriod,
+        input.maxRangeDays,
+        input.filters,
+        input.signal,
+      ),
+    ]);
+    const comparison = comparePerformanceSummaries(
+      currentReport.summary,
+      comparisonReport.summary,
+      input.minimumEventCount,
+    );
+    const currentPageviews = currentTotals(currentStats).pageviews;
+    const comparisonPageviews = currentTotals(comparisonStats).pageviews;
+    const currentCoverage =
+      currentPageviews === 0
+        ? null
+        : Math.round((comparison.current.performanceEventCount / currentPageviews) * 10_000) / 100;
+    const comparisonCoverage =
+      comparisonPageviews === 0
+        ? null
+        : Math.round((comparison.comparison.performanceEventCount / comparisonPageviews) * 10_000) /
+          100;
+    return {
+      status: comparison.status,
+      website: websiteSummary(website),
+      comparison,
+      coverage: {
+        currentPageviews,
+        comparisonPageviews,
+        currentPerformanceEventsPerPageviewPercent: currentCoverage,
+        comparisonPerformanceEventsPerPageviewPercent: comparisonCoverage,
+        interpretation: "approximate_collection_coverage" as const,
+        caveat:
+          "Performance events are sent after a delay or page exit and may omit individual metrics; this ratio is not metric-specific coverage.",
+      },
+      raw: { currentReport, comparisonReport },
     };
   } catch (error) {
     return {
@@ -807,6 +903,282 @@ export const insightsModule: ToolModule = {
     );
 
     server.registerTool(
+      "analyze_performance_portfolio",
+      {
+        title: "Analyze portfolio performance",
+        description:
+          "Compare Core Web Vitals across a bounded website portfolio, rank the worst and most-regressed sites, report collection coverage and confidence, and include bounded aligned page/device drill-downs for the leading problems.",
+        inputSchema: {
+          start: timeSchema,
+          end: timeSchema,
+          comparisonMode: z.enum(["previous", "year_over_year"]).default("previous"),
+          metrics: z
+            .array(performanceMetricSchema)
+            .min(1)
+            .max(PERFORMANCE_METRICS.length)
+            .refine((items) => new Set(items).size === items.length, "metrics must be unique")
+            .default([...PERFORMANCE_METRICS]),
+          detailMetric: performanceMetricSchema.default("lcp"),
+          websiteLimit: websiteLimitSchema,
+          detailSiteLimit: z.number().int().min(0).max(10).default(3),
+          detailRowLimit: z.number().int().min(1).max(20).default(5),
+          minimumEventCount: z.number().int().min(1).max(1_000_000_000).default(100),
+          minimumBreakdownCount: z
+            .number()
+            .int()
+            .min(1)
+            .max(1_000_000_000)
+            .default(DEFAULT_BREAKDOWN_MINIMUM_SAMPLE_COUNT),
+          excludeWebsiteIds: z.array(uuidSchema).max(50).default([]),
+          excludeDomains: z.array(z.string().trim().min(1).max(500)).max(50).default([]),
+          filters: performanceFiltersSchema.optional(),
+          timezone: timezoneSchema,
+        },
+        outputSchema,
+        annotations: READ_ONLY_ANNOTATIONS,
+      },
+      (
+        {
+          start,
+          end,
+          comparisonMode,
+          metrics,
+          detailMetric,
+          websiteLimit,
+          detailSiteLimit,
+          detailRowLimit,
+          minimumEventCount,
+          minimumBreakdownCount,
+          excludeWebsiteIds,
+          excludeDomains,
+          filters,
+          timezone,
+        },
+        extra,
+      ) =>
+        runTool(
+          async () => {
+            const period = normalizePeriod(start, end, config.maxRangeDays);
+            const baselinePeriod = comparisonPeriod(period, comparisonMode);
+            const page = websitePage(
+              await client.listWebsites({ page: 1, pageSize: websiteLimit }, extra.signal),
+            );
+            const excludedIds = new Set(excludeWebsiteIds.map((id) => id.toLowerCase()));
+            const excludedDomainSet = new Set(excludeDomains.map(normalizeDomain));
+            const excluded: Array<{ reason: string; website: ReturnType<typeof websiteSummary> }> =
+              [];
+            const selectedWebsites = page.data.filter((website) => {
+              const byId = excludedIds.has(website.id.toLowerCase());
+              const byDomain =
+                typeof website.domain === "string" &&
+                excludedDomainSet.has(normalizeDomain(website.domain));
+              if (byId || byDomain) {
+                excluded.push({
+                  website: websiteSummary(website),
+                  reason: byId ? "excluded_website_id" : "excluded_domain",
+                });
+                return false;
+              }
+              return true;
+            });
+            const sites = await mapConcurrent(selectedWebsites, 4, (website) =>
+              performancePortfolioSite(client, website, period, baselinePeriod, {
+                filters,
+                maxRangeDays: config.maxRangeDays,
+                metric: detailMetric,
+                minimumEventCount,
+                signal: extra.signal,
+                timezone,
+              }),
+            );
+            const successful = sites.filter(
+              (site): site is Extract<(typeof sites)[number], { raw: Record<string, unknown> }> =>
+                "raw" in site,
+            );
+            const failures = sites.filter(
+              (site): site is Extract<(typeof sites)[number], { status: "unavailable" }> =>
+                site.status === "unavailable",
+            );
+            const regressions = successful
+              .flatMap((site) =>
+                metrics.flatMap((metric) => {
+                  const change = site.comparison.changes[metric];
+                  return change?.impact === "regressed"
+                    ? [
+                        {
+                          website: site.website,
+                          metric,
+                          ...change,
+                          percent: typeof change.percent === "number" ? change.percent : null,
+                          confidence: site.comparison.confidence,
+                        },
+                      ]
+                    : [];
+                }),
+              )
+              .sort(
+                (left, right) =>
+                  Number(right.percent ?? 0) - Number(left.percent ?? 0) ||
+                  String(left.website.domain ?? left.website.name ?? left.website.id).localeCompare(
+                    String(right.website.domain ?? right.website.name ?? right.website.id),
+                  ),
+              );
+            const worst = successful
+              .flatMap((site) =>
+                metrics.flatMap((metric) => {
+                  const current = site.comparison.current.metrics[metric];
+                  if (current.p75 === null) return [];
+                  const [, poorThreshold] = PERFORMANCE_THRESHOLDS[metric];
+                  return [
+                    {
+                      website: site.website,
+                      metric,
+                      p75: current.p75,
+                      rating: current.rating,
+                      severityRatio: current.p75 / poorThreshold,
+                      performanceEventCount: site.comparison.current.performanceEventCount,
+                      confidence: site.comparison.confidence,
+                    },
+                  ];
+                }),
+              )
+              .sort(
+                (left, right) =>
+                  right.severityRatio - left.severityRatio ||
+                  right.performanceEventCount - left.performanceEventCount,
+              );
+            const detailWebsiteIds = [
+              ...new Set([...regressions, ...worst].map(({ website }) => website.id)),
+            ].slice(0, detailSiteLimit);
+            const details = await mapConcurrent(detailWebsiteIds, 3, async (websiteId) => {
+              const site = successful.find(({ website }) => website.id === websiteId);
+              if (!site) return undefined;
+              const currentReport = site.raw.currentReport as ReturnType<
+                typeof parsePerformanceReport
+              >;
+              const comparisonReport = site.raw.comparisonReport as ReturnType<
+                typeof parsePerformanceReport
+              >;
+              return {
+                website: site.website,
+                metric: detailMetric,
+                pages: alignPerformanceBreakdowns(
+                  currentReport[dimensionKeys.page],
+                  comparisonReport[dimensionKeys.page],
+                  {
+                    metric: detailMetric,
+                    candidateItemLimit: upstreamCandidateLimits.page,
+                    limit: detailRowLimit,
+                    minimumSampleCount: minimumBreakdownCount,
+                  },
+                ),
+                devices: alignPerformanceBreakdowns(
+                  currentReport[dimensionKeys.device],
+                  comparisonReport[dimensionKeys.device],
+                  {
+                    metric: detailMetric,
+                    candidateItemLimit: upstreamCandidateLimits.device,
+                    limit: detailRowLimit,
+                    minimumSampleCount: minimumBreakdownCount,
+                  },
+                ),
+              };
+            });
+            const publicSites = successful.map((site) => {
+              const { raw: _raw, ...rest } = site;
+              return {
+                ...rest,
+                comparison: {
+                  ...rest.comparison,
+                  current: {
+                    ...rest.comparison.current,
+                    metrics: Object.fromEntries(
+                      metrics.map((metric) => [metric, rest.comparison.current.metrics[metric]]),
+                    ),
+                  },
+                  comparison: {
+                    ...rest.comparison.comparison,
+                    metrics: Object.fromEntries(
+                      metrics.map((metric) => [metric, rest.comparison.comparison.metrics[metric]]),
+                    ),
+                  },
+                  changes: Object.fromEntries(
+                    metrics.map((metric) => [metric, rest.comparison.changes[metric]]),
+                  ),
+                },
+              };
+            });
+            const allEmpty =
+              successful.length > 0 &&
+              successful.every(({ comparison }) => comparison.status === "empty");
+            return {
+              dataStatus:
+                successful.length === 0
+                  ? failures.length > 0
+                    ? ("unknown" as const)
+                    : ("empty" as const)
+                  : allEmpty
+                    ? ("empty" as const)
+                    : ("available" as const),
+              ...(allEmpty ? { emptyReason: "no_data_in_either_period" as const } : {}),
+              generatedAt: new Date().toISOString(),
+              periods: { current: isoPeriod(period), comparison: isoPeriod(baselinePeriod) },
+              comparisonMode,
+              metrics,
+              filterScope: performanceFilterScope(filters),
+              trafficSegmentation: {
+                applied: "all_collected_performance_events" as const,
+                likelyHumanFilter: "unavailable_upstream" as const,
+                likelyBotFilter: "unavailable_upstream" as const,
+                reason:
+                  "Umami 3.2 performance events do not retain referrer or a queryable bot classification. Known user-agent bots are normally rejected during Umami collection unless its bot check is disabled.",
+              },
+              coverage: {
+                visibleWebsites: page.count,
+                selectedWebsites: selectedWebsites.length,
+                analyzedWebsites: sites.length,
+                successfulWebsites: successful.length,
+                failedWebsites: failures.length,
+                excludedWebsites: excluded.length,
+                websiteLimit,
+                websitesTruncated: page.count > page.data.length,
+              },
+              thresholds: {
+                minimumEventCount,
+                minimumBreakdownCount,
+                eventCountScope: "all_performance_events" as const,
+                metricSpecificCountsAvailable: false,
+              },
+              upstreamCapabilities: {
+                metricSpecificSampleCounts: false,
+                bucketSampleCounts: false,
+                nativeMultiDimensionalBreakdown: false,
+                lcpDecomposition: false,
+                lcpElementAttribution: false,
+                cacheAndEdgeDimensions: false,
+              },
+              leaders: {
+                worst: worst.slice(0, 10),
+                regressions: regressions.slice(0, 10),
+                lowConfidence: successful
+                  .filter(({ comparison }) => comparison.confidence === "low")
+                  .map(({ website, comparison }) => ({
+                    website,
+                    currentPerformanceEventCount: comparison.current.performanceEventCount,
+                    comparisonPerformanceEventCount: comparison.comparison.performanceEventCount,
+                  })),
+              },
+              excluded,
+              failures,
+              details: details.filter((detail) => detail !== undefined),
+              sites: publicSites,
+            };
+          },
+          { range: { start, end }, timezone },
+        ),
+    );
+
+    server.registerTool(
       "explain_traffic_change",
       {
         title: "Explain a traffic change",
@@ -1210,6 +1582,7 @@ export const insightsModule: ToolModule = {
                     comparison: pre,
                     filters: analyticsFilters,
                     excludedReferrers: quality.excludedReferrers,
+                    maxRangeDays: config.maxRangeDays,
                     timezone,
                     signal: extra.signal,
                   });

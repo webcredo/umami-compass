@@ -29,11 +29,22 @@ The roadmap describes direction, not a compatibility promise. Proposals should b
 - Expanded metrics, weekly sessions, and bounded replay detail.
 - Saved replay metadata where public API stability permits.
 - Capability discovery for differences between Cloud and self-hosted releases.
-- Configurable route-template grouping such as `/casinos/:slug` to keep page-level comparisons statistically useful.
-- Enriched RUM dimensions for country × device × page, navigation and connection type, cache status, edge region, and cold-versus-cached visits where upstream instrumentation exposes them safely.
-- Session-scoped TTFB → FCP → LCP diagnostics with LCP element/resource attribution; this requires data beyond Umami's aggregate performance report.
+- Native performance dimensions for country × device × page without bounded Compass fan-out.
+- Metric-specific and per-bucket Web Vital sample counts from upstream `count(metric)` queries.
+- Navigation and connection type, cache status, edge region, and cold-versus-cached visits where upstream instrumentation exposes them safely.
+- Session-scoped TTFB → FCP → LCP diagnostics with privacy-safe LCP element/resource attribution; this requires tracker, schema, and report changes beyond Umami's aggregate performance API.
 
-## 0.5 — remote deployment profile
+The upstream contract needed for these items is detailed in [Umami 3.2 performance gaps and upstream contract proposal](docs/research/umami-performance-gaps-3.2.md).
+
+## 0.5 — portfolio performance analysis
+
+- Bounded portfolio-wide Core Web Vital comparison with confidence, approximate collection coverage, exclusions, isolated failures, and page/device drill-downs.
+- Current-versus-previous and year-over-year Web Vital summaries plus truncation-safe aligned dimension comparisons.
+- Derived two-dimensional performance breakdowns and direct regex-filtered route groups without averaging non-composable percentiles.
+- Explicit performance-event count semantics, partial buckets, strict filter scope, empty-data normalization, and sanitized website discovery.
+- A documented upstream contract for metric-specific counts, bot scope, native dimensions, and privacy-safe LCP attribution.
+
+## 0.6 — remote deployment profile
 
 - Streamable HTTP only with MCP-compliant OAuth 2.1 resource-server behavior.
 - Tenant isolation, rate limits, audit logs, deployment health checks, and observability without secrets.

@@ -20,6 +20,7 @@ import {
   uuidSchema,
 } from "../schemas.js";
 import type { ToolModule } from "../tool-module.js";
+import { sanitizeWebsitePage } from "../websites.js";
 
 const metricTypeSchema = z.enum([
   "browser",
@@ -76,7 +77,9 @@ export const coreModule: ToolModule = {
         annotations: READ_ONLY_ANNOTATIONS,
       },
       ({ page, pageSize, search }, extra) =>
-        runTool(() => client.listWebsites({ page, pageSize, search }, extra.signal)),
+        runTool(async () =>
+          sanitizeWebsitePage(await client.listWebsites({ page, pageSize, search }, extra.signal)),
+        ),
     );
 
     server.registerTool(

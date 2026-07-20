@@ -4,6 +4,27 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-21
+
+### Added
+
+- Add `analyze_performance_portfolio` with previous or year-over-year comparison, per-site Web Vital ratings and changes, performance-event confidence, approximate pageview coverage, isolated failures, exclusions, and bounded aligned page/device drill-downs.
+- Add `compare_web_vitals` and `compare_performance_breakdown`, including explicit current/comparison periods, material changes, confidence, and truncation-safe aligned rows.
+- Add bounded derived performance cross-tabs and direct regex-filtered route-group performance without averaging non-composable URL percentiles.
+- Mark incomplete performance time buckets and expose whether the upstream response supplied a count for every point.
+
+### Changed
+
+- Restrict performance tools to filters that Umami 3.2 can apply consistently to performance events. Requested unsupported scopes now fail validation instead of returning silently widened data.
+- Label Umami's aggregate `count(*)` as a performance-event count rather than a metric-specific sample count, and expose the upstream limitation in summaries, breakdowns, confidence, and capabilities.
+- Sanitize `list_websites` and `umami://websites` to `id`, `name`, and `domain`; detailed website metadata remains available only through explicit `get_website` requests.
+
+### Fixed
+
+- Treat zero-event Web Vital responses as empty and replace upstream zero placeholders with unavailable metric values instead of rating them as perfect performance.
+- Stop claiming that referral-based human-traffic exclusions apply to Core Web Vitals. Umami 3.2 performance events do not retain referrer domains, so release analysis now reports `scope_mismatch` when the scopes cannot be made comparable.
+- Reject `excludeBounce` for performance reports because Umami 3.2 parses the option but does not apply its generated bounce-exclusion join in performance SQL.
+
 ## [0.4.1] - 2026-07-16
 
 ### Fixed
