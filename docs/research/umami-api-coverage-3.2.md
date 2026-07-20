@@ -9,13 +9,17 @@ This matrix was checked against the tagged Umami [`v3.2.0`](https://github.com/u
 | Websites and overview | websites, stats, pageviews, metrics, active, daterange | `core`, default; paging, dimensions, series, and date range bounded |
 | Events | events list, stats, series | `events`, opt-in; row-level list is sensitive and time series are capped |
 | Sessions | sessions, stats, detail, activity | `sessions`, opt-in; page/activity caps and privacy warning |
-| Performance | `POST /reports/performance` | `performance`, opt-in; LCP/INP/CLS/FCP/TTFB summary, series, and dimension breakdowns bounded |
+| Performance | `POST /reports/performance` | `performance`, opt-in; normalized LCP/INP/CLS/FCP/TTFB summary and partial-aware series, single-period and aligned comparisons, bounded dimension rankings, derived cross-tabs, and direct route-group queries |
 | Saved analysis | website reports, report detail, segments/cohorts | `reports`, opt-in; GET only for persisted objects |
 | Calculated analysis | goal, funnel, journey, retention, UTM, attribution, breakdown report routes | `reports`, opt-in; closed typed semantic-read POST allowlist and bounded arrays |
 | Revenue | revenue stats and metrics | `revenue`, opt-in |
 | Replays | replay list metadata | `replay`, opt-in; raw rrweb event payloads excluded |
 | Heatmaps | `POST /reports/heatmap` | `heatmaps`, opt-in; click/scroll page discovery and at most 1,000 detail points |
 | Decision workflows | bounded combinations of websites, stats, metrics, expanded metrics, pageviews, daterange, events, recorder, and performance | `insights`, default; website resolution, portfolio, traffic-change, aligned series comparison, release-impact, traffic-quality, and tracking-health results |
+
+Umami 3.2 performance queries return `count(*)` rather than a non-null count for each selected metric, omit counts from chart buckets, and do not apply the generated `excludeBounce` join. Performance events also omit referrer/UTM attribution and LCP element/resource decomposition. Compass exposes these as capability and scope limitations, rejects unsupported filters, and does not reinterpret zero placeholders or mismatched audiences as valid performance evidence.
+
+See [Umami 3.2 performance gaps and upstream contract proposal](umami-performance-gaps-3.2.md) for the concrete upstream count, filter, multidimensional, and LCP-attribution changes.
 
 ## Candidate read-only additions
 

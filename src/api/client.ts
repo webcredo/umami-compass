@@ -232,10 +232,7 @@ export class UmamiClient {
     await this.#assertTeamWebsiteAllowed(websiteId, signal);
   }
 
-  async listWebsites(
-    query: Query,
-    signal?: AbortSignal,
-  ): Promise<PagedResponse<Website> | unknown> {
+  async listWebsites(query: Query, signal?: AbortSignal): Promise<PagedResponse<Website>> {
     const requestedPage = typeof query.page === "number" ? query.page : 1;
     const requestedPageSize = typeof query.pageSize === "number" ? query.pageSize : 20;
     const search = typeof query.search === "string" ? query.search : undefined;

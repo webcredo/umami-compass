@@ -52,10 +52,11 @@ try {
     const { tools } = await client.listTools();
     const names = tools.map(({ name }) => name);
     if (
-      tools.length !== 14 ||
+      tools.length !== 15 ||
       !names.includes("get_server_info") ||
       !names.includes("get_pageviews") ||
       !names.includes("get_portfolio_overview") ||
+      !names.includes("analyze_performance_portfolio") ||
       !names.includes("compare_traffic_series")
     ) {
       throw new Error(`unexpected packaged MCP tool surface: ${names.join(", ")}`);

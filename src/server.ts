@@ -18,6 +18,7 @@ import {
   READ_ONLY_POLICY,
   type ToolModule,
 } from "./mcp/tool-module.js";
+import { sanitizeWebsitePage } from "./mcp/websites.js";
 import { getServerInfo } from "./server-info.js";
 import { VERSION } from "./version.js";
 
@@ -50,7 +51,7 @@ export function createServer(options: CreateServerOptions): McpServer {
     },
     {
       instructions:
-        "Secure, read-only Umami Analytics access. Start with resolve_website when the insights toolset is enabled, otherwise use list_websites. Use bounded time ranges and prefer insight workflows for portfolio, traffic-change, release-impact, and tracking-health decisions. Performance, saved reports, session, revenue, heatmap and replay data may require separate Umami permissions. Minimize sensitive data entering model context. No tool in this release changes Umami state.",
+        "Secure, read-only Umami Analytics access. Start with resolve_website when the insights toolset is enabled, otherwise use list_websites. Use bounded time ranges and prefer insight workflows for traffic or performance portfolios, traffic-change, release-impact, and tracking-health decisions. Treat performanceEventCount as an all-performance-event count, not a metric-specific sample count; honor filterScope and scope_mismatch. Performance, saved reports, session, revenue, heatmap and replay data may require separate Umami permissions. Minimize sensitive data entering model context. No tool in this release changes Umami state.",
     },
   );
   const client = new UmamiClient(options.config, options.fetch);
@@ -73,7 +74,9 @@ export function createServer(options: CreateServerOptions): McpServer {
     },
     async (uri, extra) => {
       try {
-        const websites = await client.listWebsites({ page: 1, pageSize: 100 }, extra.signal);
+        const websites = sanitizeWebsitePage(
+          await client.listWebsites({ page: 1, pageSize: 100 }, extra.signal),
+        );
         return {
           contents: [
             {
@@ -175,7 +178,7 @@ export function createServer(options: CreateServerOptions): McpServer {
                   ? `Analyze ${start} through ${end}.`
                   : "Use the most recent complete seven-day period and compare it with the preceding seven days.",
                 audience ? `Audience: ${audience}.` : "Write for a product and growth audience.",
-                "Use get_portfolio_overview first. Investigate only the most material changes with explain_traffic_change. Separate observations from hypotheses, call out missing or stale data, and finish with no more than five prioritized actions.",
+                "Use get_portfolio_overview first, then analyze_performance_portfolio when the account can view performance reports. Investigate only the most material traffic changes with explain_traffic_change. Separate observations from hypotheses, call out missing, stale, low-confidence, or scope-mismatched data, and finish with no more than five prioritized actions.",
               ].join(" "),
             },
           },

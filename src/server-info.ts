@@ -24,6 +24,8 @@ export function getServerInfo(config: UmamiCompassConfig) {
       maxResponseBytes: config.maxResponseBytes,
       requestTimeoutMs: config.requestTimeoutMs,
       channelBreakdownCandidates: 50,
+      performanceCrossTabCandidates: 10,
+      routePerformanceGroups: 20,
     },
     capabilities: {
       structuredFilterOperators: true,
@@ -32,7 +34,14 @@ export function getServerInfo(config: UmamiCompassConfig) {
       derivedChannelBreakdowns: insightsEnabled || reportsEnabled,
       referralSpamHeuristics: insightsEnabled || reportsEnabled,
       humanTrafficPreset: insightsEnabled || reportsEnabled,
+      humanPerformancePreset: false,
       periodSeriesComparison: insightsEnabled,
+      performancePortfolio: insightsEnabled,
+      performancePeriodComparison: config.toolsets.has("performance"),
+      derivedPerformanceCrossTabs: config.toolsets.has("performance"),
+      routeGroupPerformance: config.toolsets.has("performance"),
+      performanceMetricSampleCounts: false,
+      lcpDecomposition: false,
     },
   };
 }

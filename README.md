@@ -13,7 +13,7 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.4.1` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.5.0` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
 > The `npx` examples follow the stable npm release channel and check it whenever the MCP process starts. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 
@@ -25,7 +25,7 @@ Existing Umami MCP servers each cover part of the problem, but our July 2026 rev
 - Umami 3.2-aware responses, including both `pageviews` and `sessions`, Core Web Vitals, funnels, journeys, attribution, retention, revenue, bounded heatmaps, and replay metadata.
 - Read-only by construction: every tool declares MCP safety annotations; no create, update, delete, raw HTML, or arbitrary URL tool exists.
 - Defense in depth: fixed upstream origin, HTTPS policy, website and team allowlists, range/page/response-byte caps, request timeout, cancellation propagation, and redacted errors.
-- Decision-ready insights: bounded portfolio overviews, traffic-change evidence, release-impact analysis, tracking-health audits, and website resolution without arbitrary API access.
+- Decision-ready insights: bounded traffic and performance portfolio overviews, traffic-change evidence, release-impact analysis, tracking-health audits, and website resolution without arbitrary API access.
 - Agent-friendly output: machine-readable `structuredContent`, a common status/range/truncation envelope, two resources, and six guided prompts.
 - Contributor-friendly architecture: endpoint modules, dependency-injected HTTP, a central access policy, ADRs, and real MCP integration tests.
 
@@ -43,7 +43,7 @@ npx --yes --prefer-online umami-compass@latest
 
 `@latest` selects the stable npm channel and `--prefer-online` makes npm check the registry even when package metadata is cached. npm still reuses the cached package when that exact release is already present. Updates take effect the next time the MCP process starts; an already running local server cannot replace itself.
 
-Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.4.1`. Never use the preview channel for an unattended production setup.
+Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.5.0`. Never use the preview channel for an unattended production setup.
 
 ### Umami Cloud
 
@@ -92,29 +92,41 @@ Do not commit real credentials. Prefer a dedicated view-only Umami account and t
 
 ## Tools
 
-The least-privilege default enables `core,insights`: eight primitive aggregate tools plus six decision-ready aggregate workflows. Row-level events, sessions, replay, heatmaps, and other more sensitive modules remain opt-in.
+The least-privilege default enables `core,insights`: eight primitive aggregate tools plus seven decision-ready aggregate workflows. Row-level events, sessions, replay, heatmaps, and other more sensitive modules remain opt-in.
 
 | Toolset | Tools | Default |
 | --- | --- | --- |
 | `core` | `get_server_info`, `list_websites`, `get_website`, `get_website_stats`, `get_pageviews`, `get_metrics`, `get_active_visitors`, `get_website_date_range` | Yes |
-| `insights` | `resolve_website`, `get_portfolio_overview`, `explain_traffic_change`, `compare_traffic_series`, `analyze_release_impact`, `tracking_health_check` | Yes |
+| `insights` | `resolve_website`, `get_portfolio_overview`, `analyze_performance_portfolio`, `explain_traffic_change`, `compare_traffic_series`, `analyze_release_impact`, `tracking_health_check` | Yes |
 | `events` | `list_events`, `get_event_stats`, `get_event_series` | No |
 | `sessions` | `list_sessions`, `get_session_stats`, `get_session`, `get_session_activity` | No |
-| `performance` | `get_web_vitals`, `get_performance_breakdown` for LCP, INP, CLS, FCP, and TTFB | No |
+| `performance` | `get_web_vitals`, `get_performance_breakdown`, `compare_web_vitals`, `compare_performance_breakdown`, `get_performance_cross_tab`, `get_route_group_performance` | No |
 | `reports` | Saved reports and segments plus goal, funnel, journey, retention, UTM, attribution, and multi-field breakdown reports | No |
 | `revenue` | `get_revenue_stats`, `get_revenue_metrics` | No |
 | `replay` | `list_replays` (metadata only; never raw rrweb payloads) | No |
 | `heatmaps` | `get_heatmap` (click/scroll pages and bounded detail points) | No |
 
-Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has 14 aggregate tools; `all` has 37. Multi-website insights are bounded to 50 websites with four concurrent website workers. High-cardinality report, performance, heatmap, channel fan-out, and activity results carry explicit limits and truncation metadata.
+Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has 15 aggregate tools; `all` has 42. Multi-website insights are bounded to 50 websites with four concurrent website workers. High-cardinality report, performance, heatmap, channel fan-out, and activity results carry explicit limits and truncation metadata.
 
-`get_performance_breakdown` requires at least 20 samples per row by default for page, page-title, device, and browser rankings. This is an exploratory p75 quality guard—enough to put at least five observations in the upper quartile—not a claim of statistical significance. Set `minimumSampleCount` explicitly to tighten the guard or lower it to `1` to include every otherwise valid row. Rows with missing, non-integer, or invalid counts are malformed rather than treated as sufficiently sampled.
+`get_performance_breakdown` requires at least 20 performance events per row by default for page, page-title, device, and browser rankings. This is an exploratory p75 quality guard, not a claim of statistical significance. Umami 3.2 calculates these counts with `count(*)`, not `count(metric)`, so Compass labels them as event counts and never presents them as metric-specific samples. Set `minimumSampleCount` explicitly to tighten the guard or lower it to `1` to include every otherwise valid row.
 
 Umami 3.2 caps page, page-title, and browser candidates at 500 before Compass can apply the sample guard. Breakdown responses therefore report the effective minimum, excluded-row counts, candidate coverage, and whether that upstream cap may make the filtered ranking incomplete. If all complete candidates are undersized, `emptyReason` is `insufficient_sample_size`; if the candidate cap prevents that conclusion, `dataStatus` is `unknown`.
 
 Successful tool responses preserve the existing `data` field and add a common `meta` envelope. Depending on the request it includes `dataStatus`, `emptyReason`, `websiteId`, `requestedRange`, `timezone`, and `truncated`, allowing clients to distinguish a valid empty range from a disabled feature or a truncated result.
 
-The server exposes `umami://websites` and the sanitized `umami://capabilities` resource. `get_server_info` returns the same local version, enabled toolsets, limits, and feature flags as a tool. Guided prompts cover an analytics report, weekly portfolio briefing, traffic investigation, release impact, tracking health, and conversion audit; each prompt is registered only when its required toolset is enabled. Scheduling a recurring briefing remains the MCP client's responsibility; the local stdio server does not run a background scheduler or send messages.
+The server exposes `umami://websites` and the sanitized `umami://capabilities` resource. Website discovery returns only `id`, `name`, and `domain`; request `get_website` explicitly when detailed metadata is required. `get_server_info` returns the same local version, enabled toolsets, limits, and feature flags as a tool. Guided prompts cover an analytics report, weekly portfolio briefing, traffic investigation, release impact, tracking health, and conversion audit; each prompt is registered only when its required toolset is enabled. Scheduling a recurring briefing remains the MCP client's responsibility; the local stdio server does not run a background scheduler or send messages.
+
+### Performance analysis and upstream limits
+
+`analyze_performance_portfolio` performs two bounded performance requests and two aggregate traffic requests per selected website, with four website workers. It returns current/comparison p75 ratings, material changes, worst and regressed leaders, approximate performance-events-per-pageview coverage, low-confidence warnings, isolated site failures, and aligned page/device details for at most the requested `detailSiteLimit`. Portfolio p75 values are ranked but never averaged because percentiles from separate websites are not composable.
+
+`compare_web_vitals` compares all five summary metrics. `compare_performance_breakdown` aligns page, title, device, or browser rows and omits candidates whose absence is uncertain because an upstream top-500 list was capped. `get_performance_cross_tab` derives combinations through at most ten filtered fan-out requests and reports whether candidates came from performance events or traffic metrics. `get_route_group_performance` accepts caller-defined path regexes and queries every route group directly; route groups may overlap and PostgreSQL/ClickHouse regex dialect details can differ.
+
+Performance tools accept only page/title and persisted environment filters that are consistent across Umami's supported database backends. `excludeBounce`, referrer, UTM, hostname, query, event, tag, and other non-persisted performance fields are rejected instead of ignored. In particular, Umami 3.2 builds but does not use its `excludeBounce` join in the performance report.
+
+Umami 3.2 does not return metric-specific sample counts or counts in chart buckets. Compass therefore returns `count: null` for a chart point when the field is absent, includes `sampleCounts.status="unavailable_upstream"`, and marks incomplete requested/current buckets with `partial: true`. Overall counts are named `performanceEventCount`. Non-CLS all-zero percentile placeholders are treated as unavailable; a zero CLS remains valid.
+
+LCP decomposition, LCP element/resource attribution, cache status, and edge region are explicitly reported as unavailable because Umami's aggregate performance report does not collect or expose them. Compass does not infer a decomposition by subtracting unrelated aggregate percentiles.
 
 ### Filters, direct traffic, channels, and traffic quality
 
@@ -133,7 +145,7 @@ For compatibility, `{"referrer": ""}` also isolates rows whose referrer domain i
 
 `explain_traffic_change`, `analyze_release_impact`, and `run_breakdown_report` accept `filters.channel`, including `direct`. `run_breakdown_report` also accepts `channel` as a field, so requests such as `channel × device` work. Umami 3.2 does not natively expose channel as a filter or breakdown field; Compass derives these results through bounded expanded-metric fan-out and reports candidate coverage, omitted rows, request count, and truncation under `dataQuality`. Channel cross-tabs cannot be combined with custom events or with `filters.match: "any"`, because Umami cannot express the required candidate predicate outside that OR group; Compass rejects these requests instead of returning overlapping totals.
 
-Traffic-change, release-impact, comparison-series, and breakdown results conservatively flag referral-spam candidates using the combined pattern of a generated-looking domain, very high bounce rate, near-zero visit duration, and minimum traffic. Set `trafficSegment` to `human` to exclude only those candidates with native negative filters. The preset fails closed when both periods cannot be assessed or when mandatory exclusions would be weakened by `filters.match: "any"`. Findings remain heuristics, not a definitive bot classification, and include their evidence and thresholds.
+Traffic-change, release-impact, comparison-series, and breakdown results conservatively flag referral-spam candidates using the combined pattern of a generated-looking domain, very high bounce rate, near-zero visit duration, and minimum traffic. Set `trafficSegment` to `human` to exclude only those candidates from traffic results with native negative filters. The preset fails closed when both periods cannot be assessed or when mandatory exclusions would be weakened by `filters.match: "any"`. Findings remain heuristics, not a definitive bot classification, and include their evidence and thresholds. Referrer exclusions cannot be applied to Umami 3.2 performance events; release-impact analysis marks that performance evidence `scope_mismatch` rather than comparing a different audience silently.
 
 `analyze_release_impact` returns a compact executive summary, exact comparison periods, and recommended checks by default while avoiding breakdown fan-out; set `detailLevel` to `full` for breakdowns, traffic-quality evidence, and complete Web Vital changes. Pass known neighboring deployments through `otherReleases` so Compass can mark the result as confounded instead of attributing the whole window to one release. When Web Vital samples are insufficient, the primary verdict is `insufficient_data` and `sampleReadiness` reports traffic and performance deficits, an estimated `recheckAt`, and a longer equal window when the observed rate makes one feasible.
 
