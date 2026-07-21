@@ -103,7 +103,7 @@ describe("Umami Compass MCP server", () => {
       enabledToolsets?: string[];
       version?: string;
     };
-    expect(capabilityData.version).toBe("0.5.0");
+    expect(capabilityData.version).toBe("0.5.1");
     expect(capabilityData.enabledToolsets).toEqual(["core", "insights"]);
     expect(JSON.stringify(capabilities.contents)).not.toContain("test-key");
   });
@@ -168,7 +168,7 @@ describe("Umami Compass MCP server", () => {
     expect(result.structuredContent).toMatchObject({
       data: {
         name: "umami-compass",
-        version: "0.5.0",
+        version: "0.5.1",
         access: "read-only",
         capabilities: {
           emptyReferrerIsolation: true,
@@ -775,10 +775,12 @@ describe("Umami Compass MCP server", () => {
         ? [
             { name: "/shared", p50: 2_000, p75: 3_000, p95: 4_000, count: 200 },
             { name: "/new", p50: 1_000, p75: 1_500, p95: 2_000, count: 100 },
+            { name: "/small", p50: 7_000, p75: 8_000, p95: 9_000, count: 11 },
           ]
         : [
             { name: "/shared", p50: 1_000, p75: 2_000, p95: 3_000, count: 180 },
             { name: "/gone", p50: 1_000, p75: 1_500, p95: 2_000, count: 90 },
+            { name: "/small", p50: 6_000, p75: 7_000, p95: 8_000, count: 10 },
           ];
       return Response.json({
         chart: [],
@@ -816,7 +818,36 @@ describe("Umami Compass MCP server", () => {
           expect.objectContaining({ name: "/new", status: "new_in_current" }),
           expect.objectContaining({ name: "/gone", status: "missing_current" }),
         ]),
+        includeInsufficient: false,
+        dataQuality: {
+          insufficientSampleRows: 1,
+          insufficientSampleRowsExcluded: 1,
+        },
       },
+    });
+    expect(JSON.stringify(result.structuredContent)).not.toContain('"name":"/small"');
+
+    const inclusiveResult = await client.callTool({
+      name: "compare_performance_breakdown",
+      arguments: {
+        websiteId: WEBSITE_ID,
+        start: "2026-07-01",
+        end: "2026-07-07",
+        metric: "lcp",
+        dimension: "page",
+        includeInsufficient: true,
+        limit: 4,
+      },
+    });
+    const inclusiveItems = (
+      inclusiveResult.structuredContent as {
+        data: { items: Array<{ name: string; status: string }> };
+      }
+    ).data.items;
+    expect(inclusiveItems.map(({ name }) => name)).toEqual(["/shared", "/new", "/gone", "/small"]);
+    expect(inclusiveItems[3]).toMatchObject({
+      name: "/small",
+      status: "insufficient_sample_size",
     });
   });
 
@@ -1107,7 +1138,12 @@ describe("Umami Compass MCP server", () => {
         items: [],
         totalItems: 0,
       },
-      meta: { dataStatus: "unknown", truncated: true },
+      meta: {
+        dataStatus: "unknown",
+        truncated: true,
+        responseTruncated: false,
+        sectionsTruncated: ["candidateItems"],
+      },
     });
     expect(JSON.stringify(result.structuredContent)).not.toContain("emptyReason");
   });

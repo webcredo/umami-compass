@@ -423,7 +423,7 @@ export const performanceModule: ToolModule = {
       {
         title: "Compare a Web Vital breakdown",
         description:
-          "Align page, page-title, device or browser rows across two periods. Missing capped candidates remain unknown rather than being treated as zero.",
+          "Align page, page-title, device or browser rows across two periods. Comparable rows come first; undersized rows are excluded by default and missing capped candidates remain unknown rather than being treated as zero.",
         inputSchema: {
           websiteId: uuidSchema,
           start: timeSchema,
@@ -439,6 +439,10 @@ export const performanceModule: ToolModule = {
             .min(1)
             .max(1_000_000_000)
             .default(DEFAULT_BREAKDOWN_MINIMUM_SAMPLE_COUNT),
+          includeInsufficient: z
+            .boolean()
+            .default(false)
+            .describe("Include rows below minimumSampleCount after comparable rows"),
           filters: performanceFiltersSchema.optional(),
         },
         outputSchema,
@@ -457,6 +461,7 @@ export const performanceModule: ToolModule = {
           timezone,
           limit,
           minimumSampleCount,
+          includeInsufficient,
           filters,
         },
         extra,
@@ -502,6 +507,7 @@ export const performanceModule: ToolModule = {
                 {
                   metric: metric as PerformanceMetric,
                   candidateItemLimit: upstreamCandidateLimits[dimension],
+                  includeInsufficient,
                   limit,
                   minimumSampleCount,
                 },

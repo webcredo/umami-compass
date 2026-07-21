@@ -177,9 +177,13 @@ describe("Umami Compass insights", () => {
         const lcp = current ? 3_000 : 2_000;
         return json({
           ...performanceSummary(lcp, current ? 2_600 : 2_400),
-          pages: [
-            { name: "/casino/example", p50: lcp - 500, p75: lcp, p95: lcp + 500, count: 500 },
-          ],
+          pages: Array.from({ length: 6 }, (_, index) => ({
+            name: `/casino/example-${index}`,
+            p50: lcp - 500 + index,
+            p75: lcp + index,
+            p95: lcp + 500 + index,
+            count: 500,
+          })),
           devices: [{ name: "Desktop", p50: lcp - 500, p75: lcp, p95: lcp + 500, count: 600 }],
         });
       }
@@ -199,6 +203,7 @@ describe("Umami Compass insights", () => {
         metrics: ["lcp", "ttfb"],
         detailMetric: "lcp",
         detailSiteLimit: 1,
+        verbosity: "full",
       },
     });
 
@@ -213,17 +218,22 @@ describe("Umami Compass insights", () => {
         website: { id: string };
       }>;
       leaders: { regressions: Array<{ impact: string; metric: string; website: { id: string } }> };
+      responseTruncated: boolean;
+      sectionsTruncated: string[];
       sites: Array<{
         comparison: { confidence: string };
         coverage: {
           currentPageviews: number;
-          currentPerformanceEventsPerPageviewPercent: number;
+          collectionCoverage: { status: string };
+          performanceEventsPerPageviewRatio: { current: number };
         };
         website: { id: string };
       }>;
     };
     expect(data.dataStatus).toBe("available");
     expect(data.coverage).toMatchObject({ successfulWebsites: 1, failedWebsites: 0 });
+    expect(data.responseTruncated).toBe(false);
+    expect(data.sectionsTruncated).toEqual(["details.pages"]);
     expect(data.leaders.regressions[0]).toMatchObject({
       website: { id: WEBSITE_ID },
       metric: "lcp",
@@ -240,10 +250,204 @@ describe("Umami Compass insights", () => {
       coverage: { currentPageviews: 3_000 },
       comparison: { confidence: "high" },
     });
-    expect(data.sites[0]?.coverage.currentPerformanceEventsPerPageviewPercent).toBeCloseTo(
-      86.67,
-      1,
+    expect(data.sites[0]?.coverage.performanceEventsPerPageviewRatio.current).toBeCloseTo(
+      0.8667,
+      4,
     );
+    expect(data.sites[0]?.coverage.collectionCoverage.status).toBe("unknown_upstream");
+    expect(result.structuredContent).toMatchObject({
+      meta: {
+        truncated: true,
+        responseTruncated: false,
+        sectionsTruncated: ["details.pages"],
+      },
+    });
+  });
+
+  it("defaults portfolio output to a compact response", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/websites")) {
+        return json(websitePage([{ id: WEBSITE_ID, name: "Store", domain: "store.example" }]));
+      }
+      if (url.pathname.endsWith("/teams")) return json(websitePage([]));
+      if (url.pathname.endsWith("/reports/performance")) {
+        return json(performanceSummary(2_000, 500));
+      }
+      if (url.pathname.endsWith("/stats")) return json(plainTotals(1_000));
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_performance_portfolio",
+      arguments: { start: "2026-07-01", end: "2026-07-07" },
+    });
+    const structured = result.structuredContent as {
+      data: Record<string, unknown>;
+      meta: Record<string, unknown>;
+    };
+
+    expect(structured.data).toMatchObject({
+      verbosity: "compact",
+      responseTruncated: false,
+      sectionsTruncated: [],
+      coverage: { successfulWebsites: 1 },
+      sites: [
+        {
+          website: { id: WEBSITE_ID },
+          currentPerformanceEventCount: 500,
+          performanceEventsPerPageviewRatio: { current: 0.5 },
+          collectionCoverage: "unknown_upstream",
+        },
+      ],
+    });
+    expect(structured.data).not.toHaveProperty("details");
+    expect(structured.meta).toMatchObject({
+      truncated: false,
+      responseTruncated: false,
+      sectionsTruncated: [],
+    });
+    expect(JSON.stringify(structured).length).toBeLessThan(20_000);
+  });
+
+  it("keeps a 23-site compact portfolio below a bounded response budget", async () => {
+    const websites = Array.from({ length: 23 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      name: `Website ${index + 1}`,
+      domain: `site-${index + 1}.example`,
+    }));
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/websites")) return json(websitePage(websites));
+      if (url.pathname.endsWith("/teams")) return json(websitePage([]));
+      if (url.pathname.endsWith("/reports/performance")) {
+        return json(performanceSummary(2_000, 500));
+      }
+      if (url.pathname.endsWith("/stats")) return json(plainTotals(1_000));
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_performance_portfolio",
+      arguments: { start: "2026-07-01", end: "2026-07-07", websiteLimit: 23 },
+    });
+    const structured = result.structuredContent as {
+      data: { sites: unknown[]; verbosity: string };
+    };
+
+    expect(structured.data.verbosity).toBe("compact");
+    expect(structured.data.sites).toHaveLength(23);
+    expect(new TextEncoder().encode(JSON.stringify(structured)).length).toBeLessThan(24_000);
+  });
+
+  it("reports an event/pageview ratio above one without calling it collection coverage", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/websites")) {
+        return json(websitePage([{ id: WEBSITE_ID, name: "Store", domain: "store.example" }]));
+      }
+      if (url.pathname.endsWith("/teams")) return json(websitePage([]));
+      if (url.pathname.endsWith("/reports/performance")) {
+        return json(performanceSummary(2_000, 1_040));
+      }
+      if (url.pathname.endsWith("/stats")) return json(plainTotals(1_000));
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_performance_portfolio",
+      arguments: {
+        start: "2026-07-01",
+        end: "2026-07-07",
+        verbosity: "standard",
+        detailSiteLimit: 1,
+      },
+    });
+    const data = (result.structuredContent as { data: Record<string, unknown> }).data as {
+      sites: Array<{
+        coverage: {
+          collectionCoverage: { current: null; status: string };
+          performanceEventsPerPageviewRatio: { current: number };
+        };
+      }>;
+    };
+
+    expect(data.sites[0]?.coverage).toMatchObject({
+      performanceEventsPerPageviewRatio: { current: 1.04 },
+      collectionCoverage: { current: null, status: "unknown_upstream" },
+    });
+    expect(JSON.stringify(data)).not.toContain("EventsPerPageviewPercent");
+  });
+
+  it("selects drill-down websites only from the requested detail metric", async () => {
+    const fetchMock = vi.fn<Fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/websites")) {
+        return json(
+          websitePage([
+            { id: WEBSITE_ID, name: "TTFB regression", domain: "ttfb.example" },
+            { id: SECOND_WEBSITE_ID, name: "Worst LCP", domain: "lcp.example" },
+          ]),
+        );
+      }
+      if (url.pathname.endsWith("/teams")) return json(websitePage([]));
+      if (url.pathname.endsWith("/reports/performance")) {
+        const body = JSON.parse(String(init?.body)) as {
+          parameters: { startDate: string };
+          websiteId: string;
+        };
+        const current = Date.parse(body.parameters.startDate) >= Date.parse("2026-07-01");
+        const isTtfbSite = body.websiteId === WEBSITE_ID;
+        const lcp = isTtfbSite ? 1_000 : current ? 5_000 : 4_800;
+        const ttfb = isTtfbSite ? (current ? 2_500 : 500) : 500;
+        return json({
+          ...performanceSummary(lcp, 500),
+          summary: {
+            ...performanceSummary(lcp, 500).summary,
+            ttfb: { p50: ttfb - 100, p75: ttfb, p95: ttfb + 200 },
+          },
+          pages: [{ name: "/detail", p50: lcp - 500, p75: lcp, p95: lcp + 500, count: 100 }],
+          devices: [{ name: "Desktop", p50: lcp - 500, p75: lcp, p95: lcp + 500, count: 100 }],
+        });
+      }
+      if (url.pathname.endsWith("/stats")) return json(plainTotals(1_000));
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    const client = await connect(fetchMock);
+
+    const result = await client.callTool({
+      name: "analyze_performance_portfolio",
+      arguments: {
+        start: "2026-07-01",
+        end: "2026-07-07",
+        metrics: ["lcp", "ttfb"],
+        detailMetric: "lcp",
+        detailSiteLimit: 1,
+        verbosity: "standard",
+      },
+    });
+    const data = (result.structuredContent as { data: unknown }).data as {
+      details: Array<{ metric: string; website: { id: string } }>;
+      leaders: { regressions: Array<{ metric: string; website: { id: string } }> };
+    };
+
+    expect(data.leaders.regressions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          website: expect.objectContaining({ id: WEBSITE_ID }),
+          metric: "ttfb",
+        }),
+      ]),
+    );
+    expect(data.details).toEqual([
+      expect.objectContaining({
+        website: expect.objectContaining({ id: SECOND_WEBSITE_ID }),
+        metric: "lcp",
+      }),
+    ]);
   });
 
   it("builds a portfolio overview with leaders, stale tracking, and anomalies", async () => {
@@ -510,7 +714,16 @@ describe("Umami Compass insights", () => {
           omittedUncertainRows: 2,
         },
       },
-      meta: { dataStatus: "available", truncated: true },
+      meta: {
+        dataStatus: "available",
+        truncated: true,
+        responseTruncated: false,
+        sectionsTruncated: [
+          "breakdowns.dataQuality.comparisonRows",
+          "breakdowns.dataQuality.currentRows",
+          "dataQuality.path",
+        ],
+      },
     });
   });
 
