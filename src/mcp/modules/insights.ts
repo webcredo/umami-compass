@@ -394,15 +394,16 @@ async function performancePortfolioSite(
     );
     const currentPageviews = currentTotals(currentStats).pageviews;
     const comparisonPageviews = currentTotals(comparisonStats).pageviews;
-    const currentCoverage =
+    const currentRatio =
       currentPageviews === 0
         ? null
-        : Math.round((comparison.current.performanceEventCount / currentPageviews) * 10_000) / 100;
-    const comparisonCoverage =
+        : Math.round((comparison.current.performanceEventCount / currentPageviews) * 10_000) /
+          10_000;
+    const comparisonRatio =
       comparisonPageviews === 0
         ? null
         : Math.round((comparison.comparison.performanceEventCount / comparisonPageviews) * 10_000) /
-          100;
+          10_000;
     return {
       status: comparison.status,
       website: websiteSummary(website),
@@ -410,11 +411,17 @@ async function performancePortfolioSite(
       coverage: {
         currentPageviews,
         comparisonPageviews,
-        currentPerformanceEventsPerPageviewPercent: currentCoverage,
-        comparisonPerformanceEventsPerPageviewPercent: comparisonCoverage,
-        interpretation: "approximate_collection_coverage" as const,
-        caveat:
-          "Performance events are sent after a delay or page exit and may omit individual metrics; this ratio is not metric-specific coverage.",
+        performanceEventsPerPageviewRatio: {
+          current: currentRatio,
+          comparison: comparisonRatio,
+        },
+        collectionCoverage: {
+          current: null,
+          comparison: null,
+          status: "unknown_upstream" as const,
+          reason:
+            "Umami 3.2 returns performance-event totals, not distinct pageviews with a collected metric. Multiple events per pageview are possible, so the ratio is not coverage and may exceed 1.",
+        },
       },
       raw: { currentReport, comparisonReport },
     };
@@ -907,10 +914,16 @@ export const insightsModule: ToolModule = {
       {
         title: "Analyze portfolio performance",
         description:
-          "Compare Core Web Vitals across a bounded website portfolio, rank the worst and most-regressed sites, report collection coverage and confidence, and include bounded aligned page/device drill-downs for the leading problems.",
+          "Compare Core Web Vitals across a bounded website portfolio with compact-by-default output, metric-specific drill-down selection, confidence, event/pageview ratios, and precise section truncation metadata.",
         inputSchema: {
           start: timeSchema,
           end: timeSchema,
+          verbosity: z
+            .enum(["compact", "standard", "full"])
+            .default("compact")
+            .describe(
+              "compact returns concise per-site rows and leaders; standard adds richer per-site rows and drill-downs; full returns complete normalized per-site evidence",
+            ),
           comparisonMode: z.enum(["previous", "year_over_year"]).default("previous"),
           metrics: z
             .array(performanceMetricSchema)
@@ -929,6 +942,10 @@ export const insightsModule: ToolModule = {
             .min(1)
             .max(1_000_000_000)
             .default(DEFAULT_BREAKDOWN_MINIMUM_SAMPLE_COUNT),
+          includeInsufficient: z
+            .boolean()
+            .default(false)
+            .describe("Include undersized aligned drill-down rows after comparable rows"),
           excludeWebsiteIds: z.array(uuidSchema).max(50).default([]),
           excludeDomains: z.array(z.string().trim().min(1).max(500)).max(50).default([]),
           filters: performanceFiltersSchema.optional(),
@@ -941,6 +958,7 @@ export const insightsModule: ToolModule = {
         {
           start,
           end,
+          verbosity,
           comparisonMode,
           metrics,
           detailMetric,
@@ -949,6 +967,7 @@ export const insightsModule: ToolModule = {
           detailRowLimit,
           minimumEventCount,
           minimumBreakdownCount,
+          includeInsufficient,
           excludeWebsiteIds,
           excludeDomains,
           filters,
@@ -999,9 +1018,10 @@ export const insightsModule: ToolModule = {
               (site): site is Extract<(typeof sites)[number], { status: "unavailable" }> =>
                 site.status === "unavailable",
             );
-            const regressions = successful
+            const selectedMetrics = new Set(metrics);
+            const allRegressions = successful
               .flatMap((site) =>
-                metrics.flatMap((metric) => {
+                PERFORMANCE_METRICS.flatMap((metric) => {
                   const change = site.comparison.changes[metric];
                   return change?.impact === "regressed"
                     ? [
@@ -1023,9 +1043,10 @@ export const insightsModule: ToolModule = {
                     String(right.website.domain ?? right.website.name ?? right.website.id),
                   ),
               );
-            const worst = successful
+            const regressions = allRegressions.filter(({ metric }) => selectedMetrics.has(metric));
+            const allWorst = successful
               .flatMap((site) =>
-                metrics.flatMap((metric) => {
+                PERFORMANCE_METRICS.flatMap((metric) => {
                   const current = site.comparison.current.metrics[metric];
                   if (current.p75 === null) return [];
                   const [, poorThreshold] = PERFORMANCE_THRESHOLDS[metric];
@@ -1047,9 +1068,16 @@ export const insightsModule: ToolModule = {
                   right.severityRatio - left.severityRatio ||
                   right.performanceEventCount - left.performanceEventCount,
               );
-            const detailWebsiteIds = [
-              ...new Set([...regressions, ...worst].map(({ website }) => website.id)),
-            ].slice(0, detailSiteLimit);
+            const worst = allWorst.filter(({ metric }) => selectedMetrics.has(metric));
+            const allDetailWebsiteIds = [
+              ...new Set(
+                [...allRegressions, ...allWorst]
+                  .filter(({ metric }) => metric === detailMetric)
+                  .map(({ website }) => website.id),
+              ),
+            ];
+            const detailWebsiteIds =
+              verbosity === "compact" ? [] : allDetailWebsiteIds.slice(0, detailSiteLimit);
             const details = await mapConcurrent(detailWebsiteIds, 3, async (websiteId) => {
               const site = successful.find(({ website }) => website.id === websiteId);
               if (!site) return undefined;
@@ -1068,6 +1096,7 @@ export const insightsModule: ToolModule = {
                   {
                     metric: detailMetric,
                     candidateItemLimit: upstreamCandidateLimits.page,
+                    includeInsufficient,
                     limit: detailRowLimit,
                     minimumSampleCount: minimumBreakdownCount,
                   },
@@ -1078,13 +1107,15 @@ export const insightsModule: ToolModule = {
                   {
                     metric: detailMetric,
                     candidateItemLimit: upstreamCandidateLimits.device,
+                    includeInsufficient,
                     limit: detailRowLimit,
                     minimumSampleCount: minimumBreakdownCount,
                   },
                 ),
               };
             });
-            const publicSites = successful.map((site) => {
+            const visibleDetails = details.filter((detail) => detail !== undefined);
+            const fullSites = successful.map((site) => {
               const { raw: _raw, ...rest } = site;
               return {
                 ...rest,
@@ -1108,6 +1139,83 @@ export const insightsModule: ToolModule = {
                 },
               };
             });
+            const standardSites = successful.map((site) => ({
+              status: site.status,
+              website: site.website,
+              confidence: site.comparison.confidence,
+              eventCountSufficient: site.comparison.eventCountSufficient,
+              currentPerformanceEventCount: site.comparison.current.performanceEventCount,
+              comparisonPerformanceEventCount: site.comparison.comparison.performanceEventCount,
+              coverage: site.coverage,
+              metrics: Object.fromEntries(
+                metrics.map((metric) => {
+                  const current = site.comparison.current.metrics[metric];
+                  const comparisonMetric = site.comparison.comparison.metrics[metric];
+                  return [
+                    metric,
+                    {
+                      current: {
+                        p75: current.p75,
+                        rating: current.rating,
+                        dataStatus: current.dataStatus,
+                      },
+                      comparison: {
+                        p75: comparisonMetric.p75,
+                        rating: comparisonMetric.rating,
+                        dataStatus: comparisonMetric.dataStatus,
+                      },
+                      change: site.comparison.changes[metric],
+                    },
+                  ];
+                }),
+              ),
+            }));
+            const compactSites = successful.map((site) => ({
+              status: site.status,
+              website: site.website,
+              confidence: site.comparison.confidence,
+              currentPerformanceEventCount: site.comparison.current.performanceEventCount,
+              comparisonPerformanceEventCount: site.comparison.comparison.performanceEventCount,
+              performanceEventsPerPageviewRatio: site.coverage.performanceEventsPerPageviewRatio,
+              collectionCoverage: "unknown_upstream" as const,
+              metrics: Object.fromEntries(
+                metrics.map((metric) => {
+                  const change = site.comparison.changes[metric];
+                  return [
+                    metric,
+                    {
+                      currentP75: change.currentP75,
+                      comparisonP75: change.comparisonP75,
+                      currentRating: change.currentRating,
+                      percent: change.percent,
+                      impact: change.impact,
+                    },
+                  ];
+                }),
+              ),
+            }));
+            const lowConfidence = successful
+              .filter(({ comparison }) => comparison.confidence === "low")
+              .map(({ website, comparison }) => ({
+                website,
+                currentPerformanceEventCount: comparison.current.performanceEventCount,
+                comparisonPerformanceEventCount: comparison.comparison.performanceEventCount,
+              }));
+            const leaderLimit = 10;
+            const responseTruncated = page.count > page.data.length;
+            const sectionsTruncated = new Set<string>();
+            if (worst.length > leaderLimit) sectionsTruncated.add("leaders.worst");
+            if (regressions.length > leaderLimit) sectionsTruncated.add("leaders.regressions");
+            if (lowConfidence.length > leaderLimit) sectionsTruncated.add("leaders.lowConfidence");
+            if (verbosity !== "compact" && allDetailWebsiteIds.length > detailWebsiteIds.length) {
+              sectionsTruncated.add("details");
+            }
+            if (visibleDetails.some(({ pages }) => pages.itemsTruncated)) {
+              sectionsTruncated.add("details.pages");
+            }
+            if (visibleDetails.some(({ devices }) => devices.itemsTruncated)) {
+              sectionsTruncated.add("details.devices");
+            }
             const allEmpty =
               successful.length > 0 &&
               successful.every(({ comparison }) => comparison.status === "empty");
@@ -1124,7 +1232,11 @@ export const insightsModule: ToolModule = {
               generatedAt: new Date().toISOString(),
               periods: { current: isoPeriod(period), comparison: isoPeriod(baselinePeriod) },
               comparisonMode,
+              verbosity,
               metrics,
+              detailMetric,
+              responseTruncated,
+              sectionsTruncated: [...sectionsTruncated].sort(),
               filterScope: performanceFilterScope(filters),
               trafficSegmentation: {
                 applied: "all_collected_performance_events" as const,
@@ -1146,6 +1258,7 @@ export const insightsModule: ToolModule = {
               thresholds: {
                 minimumEventCount,
                 minimumBreakdownCount,
+                includeInsufficient,
                 eventCountScope: "all_performance_events" as const,
                 metricSpecificCountsAvailable: false,
               },
@@ -1156,22 +1269,22 @@ export const insightsModule: ToolModule = {
                 lcpDecomposition: false,
                 lcpElementAttribution: false,
                 cacheAndEdgeDimensions: false,
+                collectionCoverage: false,
               },
               leaders: {
-                worst: worst.slice(0, 10),
-                regressions: regressions.slice(0, 10),
-                lowConfidence: successful
-                  .filter(({ comparison }) => comparison.confidence === "low")
-                  .map(({ website, comparison }) => ({
-                    website,
-                    currentPerformanceEventCount: comparison.current.performanceEventCount,
-                    comparisonPerformanceEventCount: comparison.comparison.performanceEventCount,
-                  })),
+                worst: worst.slice(0, leaderLimit),
+                regressions: regressions.slice(0, leaderLimit),
+                lowConfidence: lowConfidence.slice(0, leaderLimit),
               },
               excluded,
               failures,
-              details: details.filter((detail) => detail !== undefined),
-              sites: publicSites,
+              sites:
+                verbosity === "full"
+                  ? fullSites
+                  : verbosity === "standard"
+                    ? standardSites
+                    : compactSites,
+              ...(verbosity === "compact" ? {} : { details: visibleDetails }),
             };
           },
           { range: { start, end }, timezone },

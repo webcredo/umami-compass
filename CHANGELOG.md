@@ -4,6 +4,24 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-21
+
+### Added
+
+- Add `compact`, `standard`, and `full` portfolio verbosity, defaulting to a bounded decision summary instead of returning every normalized per-site field.
+- Split result truncation metadata into `responseTruncated` and exact `sectionsTruncated` paths while retaining aggregate `truncated` for compatibility.
+- Add `includeInsufficient` to aligned performance comparisons and portfolio drill-downs.
+
+### Changed
+
+- Return comparable aligned rows before one-sided rows and exclude rows below `minimumSampleCount` by default.
+- Rename the misleading performance-events-per-pageview percentage to a ratio that may exceed `1`, and report real collection coverage as unavailable upstream.
+
+### Fixed
+
+- Select portfolio drill-down websites only from regressions and worst-site rankings for the requested `detailMetric`.
+- Prevent large full per-site payloads and inconclusive low-sample rows from crowding the default portfolio response.
+
 ## [0.5.0] - 2026-07-21
 
 ### Added

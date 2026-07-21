@@ -400,6 +400,8 @@ export const resultMetaSchema = z
       .optional(),
     timezone: z.string().min(1).max(100).optional(),
     truncated: z.boolean(),
+    responseTruncated: z.boolean(),
+    sectionsTruncated: z.array(z.string()),
   })
   .passthrough();
 

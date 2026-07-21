@@ -160,14 +160,56 @@ function explicitDataStatus(data: unknown): ToolDataStatus | undefined {
   return "available";
 }
 
-function hasTruncation(value: unknown, depth = 0): boolean {
-  if (depth > 5 || value === null || typeof value !== "object") return false;
-  if (Array.isArray(value)) return value.some((item) => hasTruncation(item, depth + 1));
-  for (const [key, item] of Object.entries(value)) {
-    if (key.toLowerCase().endsWith("truncated") && item === true) return true;
-    if (hasTruncation(item, depth + 1)) return true;
+function collectSectionTruncations(
+  value: unknown,
+  path: readonly string[] = [],
+  depth = 0,
+): string[] {
+  if (depth > 10 || value === null || typeof value !== "object") return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectSectionTruncations(item, path, depth + 1));
   }
-  return false;
+  const sections: string[] = [];
+  for (const [key, item] of Object.entries(value)) {
+    if (item === true && key !== "responseTruncated" && key.toLowerCase().endsWith("truncated")) {
+      if (path.length === 0 && (key === "truncated" || key === "itemsTruncated")) continue;
+      const sectionName =
+        key === "truncated"
+          ? path.join(".")
+          : [...path, key.slice(0, -"Truncated".length)].join(".");
+      if (sectionName) sections.push(sectionName);
+      continue;
+    }
+    if (key === "truncatedDimensions" && Array.isArray(item)) {
+      sections.push(
+        ...item.flatMap((dimension) =>
+          typeof dimension === "string" ? [[...path, dimension].join(".")] : [],
+        ),
+      );
+      continue;
+    }
+    sections.push(...collectSectionTruncations(item, [...path, key], depth + 1));
+  }
+  return sections;
+}
+
+function truncationMeta(data: unknown) {
+  const embedded = isRecord(data) ? data : undefined;
+  const responseTruncated =
+    typeof embedded?.responseTruncated === "boolean"
+      ? embedded.responseTruncated
+      : embedded?.truncated === true || embedded?.itemsTruncated === true;
+  const embeddedSections = Array.isArray(embedded?.sectionsTruncated)
+    ? embedded.sectionsTruncated.filter((item): item is string => typeof item === "string")
+    : collectSectionTruncations(data);
+  const sectionsTruncated = [...new Set(embeddedSections)].sort();
+  return {
+    responseTruncated,
+    sectionsTruncated,
+    // Backward-compatible aggregate. New clients should use the two precise
+    // fields above instead of trying to infer which part of a result was cut.
+    truncated: responseTruncated || sectionsTruncated.length > 0,
+  };
 }
 
 function resultMeta(data: unknown, input: ToolResultMetaInput) {
@@ -186,7 +228,7 @@ function resultMeta(data: unknown, input: ToolResultMetaInput) {
     ...(input.websiteId ? { websiteId: input.websiteId } : {}),
     ...(input.range ? { requestedRange: input.range } : {}),
     ...(input.timezone ? { timezone: input.timezone } : {}),
-    truncated: hasTruncation(data),
+    ...truncationMeta(data),
   };
 }
 

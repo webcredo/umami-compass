@@ -13,7 +13,7 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.5.0` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.5.1` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
 > The `npx` examples follow the stable npm release channel and check it whenever the MCP process starts. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 
@@ -43,7 +43,7 @@ npx --yes --prefer-online umami-compass@latest
 
 `@latest` selects the stable npm channel and `--prefer-online` makes npm check the registry even when package metadata is cached. npm still reuses the cached package when that exact release is already present. Updates take effect the next time the MCP process starts; an already running local server cannot replace itself.
 
-Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.5.0`. Never use the preview channel for an unattended production setup.
+Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.5.1`. Never use the preview channel for an unattended production setup.
 
 ### Umami Cloud
 
@@ -112,15 +112,15 @@ Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has 15 aggrega
 
 Umami 3.2 caps page, page-title, and browser candidates at 500 before Compass can apply the sample guard. Breakdown responses therefore report the effective minimum, excluded-row counts, candidate coverage, and whether that upstream cap may make the filtered ranking incomplete. If all complete candidates are undersized, `emptyReason` is `insufficient_sample_size`; if the candidate cap prevents that conclusion, `dataStatus` is `unknown`.
 
-Successful tool responses preserve the existing `data` field and add a common `meta` envelope. Depending on the request it includes `dataStatus`, `emptyReason`, `websiteId`, `requestedRange`, `timezone`, and `truncated`, allowing clients to distinguish a valid empty range from a disabled feature or a truncated result.
+Successful tool responses preserve the existing `data` field and add a common `meta` envelope. Depending on the request it includes `dataStatus`, `emptyReason`, `websiteId`, `requestedRange`, and `timezone`. Truncation is split into `responseTruncated` for an incomplete primary result and `sectionsTruncated` for bounded nested sections; the aggregate `truncated` field remains for compatibility.
 
 The server exposes `umami://websites` and the sanitized `umami://capabilities` resource. Website discovery returns only `id`, `name`, and `domain`; request `get_website` explicitly when detailed metadata is required. `get_server_info` returns the same local version, enabled toolsets, limits, and feature flags as a tool. Guided prompts cover an analytics report, weekly portfolio briefing, traffic investigation, release impact, tracking health, and conversion audit; each prompt is registered only when its required toolset is enabled. Scheduling a recurring briefing remains the MCP client's responsibility; the local stdio server does not run a background scheduler or send messages.
 
 ### Performance analysis and upstream limits
 
-`analyze_performance_portfolio` performs two bounded performance requests and two aggregate traffic requests per selected website, with four website workers. It returns current/comparison p75 ratings, material changes, worst and regressed leaders, approximate performance-events-per-pageview coverage, low-confidence warnings, isolated site failures, and aligned page/device details for at most the requested `detailSiteLimit`. Portfolio p75 values are ranked but never averaged because percentiles from separate websites are not composable.
+`analyze_performance_portfolio` performs two bounded performance requests and two aggregate traffic requests per selected website, with four website workers. `verbosity="compact"` is the default decision summary; `standard` adds concise per-site rows and metric-specific drill-downs; `full` returns complete normalized per-site evidence. Drill-down websites are selected only by `detailMetric`. Performance events per pageview are returned as a ratio that may exceed `1`; true collection coverage remains `unknown_upstream` because Umami does not return distinct covered pageviews. Portfolio p75 values are ranked but never averaged because percentiles from separate websites are not composable.
 
-`compare_web_vitals` compares all five summary metrics. `compare_performance_breakdown` aligns page, title, device, or browser rows and omits candidates whose absence is uncertain because an upstream top-500 list was capped. `get_performance_cross_tab` derives combinations through at most ten filtered fan-out requests and reports whether candidates came from performance events or traffic metrics. `get_route_group_performance` accepts caller-defined path regexes and queries every route group directly; route groups may overlap and PostgreSQL/ClickHouse regex dialect details can differ.
+`compare_web_vitals` compares all five summary metrics. `compare_performance_breakdown` aligns page, title, device, or browser rows, returns comparable rows first, excludes rows below `minimumSampleCount` by default, and omits candidates whose absence is uncertain because an upstream top-500 list was capped. Set `includeInsufficient=true` to append undersized rows after useful comparisons. `get_performance_cross_tab` derives combinations through at most ten filtered fan-out requests and reports whether candidates came from performance events or traffic metrics. `get_route_group_performance` accepts caller-defined path regexes and queries every route group directly; route groups may overlap and PostgreSQL/ClickHouse regex dialect details can differ.
 
 Performance tools accept only page/title and persisted environment filters that are consistent across Umami's supported database backends. `excludeBounce`, referrer, UTM, hostname, query, event, tag, and other non-persisted performance fields are rejected instead of ignored. In particular, Umami 3.2 builds but does not use its `excludeBounce` join in the performance report.
 

@@ -559,6 +559,7 @@ export function alignPerformanceBreakdowns(
   comparisonValue: unknown,
   options: {
     candidateItemLimit: number | null;
+    includeInsufficient: boolean;
     limit: number;
     metric: PerformanceMetric;
     minimumSampleCount: number;
@@ -587,7 +588,10 @@ export function alignPerformanceBreakdowns(
       comparisonRow !== undefined &&
       currentRow.count >= options.minimumSampleCount &&
       comparisonRow.count >= options.minimumSampleCount;
-    if (!sufficient && currentRow && comparisonRow) insufficientSampleRows += 1;
+    const hasInsufficientSample =
+      (currentRow !== undefined && currentRow.count < options.minimumSampleCount) ||
+      (comparisonRow !== undefined && comparisonRow.count < options.minimumSampleCount);
+    if (hasInsufficientSample) insufficientSampleRows += 1;
     const change =
       currentRow && comparisonRow
         ? compareMetricValues(options.metric, currentRow.p75, comparisonRow.p75, sufficient)
@@ -597,13 +601,13 @@ export function alignPerformanceBreakdowns(
         name,
         current: currentRow ?? null,
         comparison: comparisonRow ?? null,
-        status: !currentRow
-          ? ("missing_current" as const)
-          : !comparisonRow
-            ? ("new_in_current" as const)
-            : sufficient
-              ? ("comparable" as const)
-              : ("insufficient_sample_size" as const),
+        status: hasInsufficientSample
+          ? ("insufficient_sample_size" as const)
+          : !currentRow
+            ? ("missing_current" as const)
+            : !comparisonRow
+              ? ("new_in_current" as const)
+              : ("comparable" as const),
         ...(change ?? {
           currentP75: currentRow?.p75 ?? null,
           comparisonP75: comparisonRow?.p75 ?? null,
@@ -624,6 +628,14 @@ export function alignPerformanceBreakdowns(
     ];
   });
   rows.sort((left, right) => {
+    const statusOrder = {
+      comparable: 0,
+      new_in_current: 1,
+      missing_current: 1,
+      insufficient_sample_size: 2,
+    } as const;
+    const statusDifference = statusOrder[left.status] - statusOrder[right.status];
+    if (statusDifference !== 0) return statusDifference;
     const absoluteDifference =
       Math.abs(Number(right.absolute ?? 0)) - Math.abs(Number(left.absolute ?? 0));
     if (absoluteDifference !== 0) return absoluteDifference;
@@ -632,23 +644,26 @@ export function alignPerformanceBreakdowns(
       left.name.localeCompare(right.name)
     );
   });
-  const availableRows = rows.filter(({ status }) => status !== "insufficient_sample_size");
+  const includedRows = options.includeInsufficient
+    ? rows
+    : rows.filter(({ status }) => status !== "insufficient_sample_size");
   return {
     dataStatus:
-      availableRows.length > 0
+      includedRows.length > 0
         ? ("available" as const)
-        : rows.length > 0
+        : insufficientSampleRows > 0
           ? ("empty" as const)
           : current.sourceItems === 0 && comparison.sourceItems === 0
             ? ("empty" as const)
             : ("unknown" as const),
-    ...(availableRows.length === 0 && rows.length > 0
+    ...(includedRows.length === 0 && insufficientSampleRows > 0
       ? { emptyReason: "insufficient_sample_size" as const }
       : current.sourceItems === 0 && comparison.sourceItems === 0
         ? { emptyReason: "no_data_in_either_period" as const }
         : {}),
-    ...boundedItems(rows, options.limit),
+    ...boundedItems(includedRows, options.limit),
     minimumSampleCount: options.minimumSampleCount,
+    includeInsufficient: options.includeInsufficient,
     dataQuality: {
       candidateItemLimit: options.candidateItemLimit,
       currentCandidateItems: current.sourceItems,
@@ -659,6 +674,7 @@ export function alignPerformanceBreakdowns(
       comparisonInvalidItemsExcluded: comparison.invalidItemsExcluded,
       omittedUncertainRows,
       insufficientSampleRows,
+      insufficientSampleRowsExcluded: options.includeInsufficient ? 0 : insufficientSampleRows,
       sampleCountScope: "all_performance_events_in_row" as const,
       metricSampleCountsAvailable: false,
     },
