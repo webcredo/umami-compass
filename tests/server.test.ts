@@ -5,6 +5,7 @@ import type { Fetch } from "../src/api/client.js";
 import { loadConfig } from "../src/config.js";
 import type { ToolModule } from "../src/mcp/tool-module.js";
 import { createServer } from "../src/server.js";
+import { VERSION } from "../src/version.js";
 
 const WEBSITE_ID = "6b2c8c10-908c-4a8e-a924-4049eb3bde8c";
 const connected: Array<{ client: Client; server: ReturnType<typeof createServer> }> = [];
@@ -103,7 +104,7 @@ describe("Umami Compass MCP server", () => {
       enabledToolsets?: string[];
       version?: string;
     };
-    expect(capabilityData.version).toBe("0.5.1");
+    expect(capabilityData.version).toBe(VERSION);
     expect(capabilityData.enabledToolsets).toEqual(["core", "insights"]);
     expect(JSON.stringify(capabilities.contents)).not.toContain("test-key");
   });
@@ -168,7 +169,7 @@ describe("Umami Compass MCP server", () => {
     expect(result.structuredContent).toMatchObject({
       data: {
         name: "umami-compass",
-        version: "0.5.1",
+        version: VERSION,
         access: "read-only",
         capabilities: {
           emptyReferrerIsolation: true,

@@ -4,6 +4,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-12
+
+### Removed
+
+- Remove donation links and requests for financial support from the package README and GitHub funding configuration.
+
 ## [0.5.1] - 2026-07-21
 
 ### Added
