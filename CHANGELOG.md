@@ -4,6 +4,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-25
+
+### Added
+
+- Add the read-only `get_event_property_values` tool to count values for a named event and property over a date range, optionally scoped to an exact page path.
+
 ## [0.5.2] - 2026-11-12
 
 ### Removed

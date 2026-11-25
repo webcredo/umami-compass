@@ -12,7 +12,7 @@
 
 Umami Compass is a secure, read-only [Model Context Protocol](https://modelcontextprotocol.io/) server for [Umami Analytics](https://umami.is/). It gives MCP clients accurate Umami 3.2 analytics without exposing a database or allowing arbitrary network requests.
 
-Version `0.5.2` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
+Version `0.6.0` is the current source release. See [Compatibility](#compatibility) before using it with older Umami versions.
 
 > The `npx` examples follow the stable npm release channel and check it whenever the MCP process starts. For source-based evaluation, clone this repository, run `pnpm install --frozen-lockfile && pnpm build`, and use `node /absolute/path/to/umami-compass/dist/cli.js` as the MCP command.
 
@@ -42,7 +42,7 @@ npx --yes --prefer-online umami-compass@latest
 
 `@latest` selects the stable npm channel and `--prefer-online` makes npm check the registry even when package metadata is cached. npm still reuses the cached package when that exact release is already present. Updates take effect the next time the MCP process starts; an already running local server cannot replace itself.
 
-Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.5.2`. Never use the preview channel for an unattended production setup.
+Use `umami-compass@next` instead to opt into preview releases. For reproducible CI or centrally managed environments, pin an exact release and omit the online check, for example `npx --yes umami-compass@0.6.0`. Never use the preview channel for an unattended production setup.
 
 ### Umami Cloud
 
@@ -97,7 +97,7 @@ The least-privilege default enables `core,insights`: eight primitive aggregate t
 | --- | --- | --- |
 | `core` | `get_server_info`, `list_websites`, `get_website`, `get_website_stats`, `get_pageviews`, `get_metrics`, `get_active_visitors`, `get_website_date_range` | Yes |
 | `insights` | `resolve_website`, `get_portfolio_overview`, `analyze_performance_portfolio`, `explain_traffic_change`, `compare_traffic_series`, `analyze_release_impact`, `tracking_health_check` | Yes |
-| `events` | `list_events`, `get_event_stats`, `get_event_series` | No |
+| `events` | `list_events`, `get_event_stats`, `get_event_series`, `get_event_property_values` | No |
 | `sessions` | `list_sessions`, `get_session_stats`, `get_session`, `get_session_activity` | No |
 | `performance` | `get_web_vitals`, `get_performance_breakdown`, `compare_web_vitals`, `compare_performance_breakdown`, `get_performance_cross_tab`, `get_route_group_performance` | No |
 | `reports` | Saved reports and segments plus goal, funnel, journey, retention, UTM, attribution, and multi-field breakdown reports | No |
@@ -105,7 +105,9 @@ The least-privilege default enables `core,insights`: eight primitive aggregate t
 | `replay` | `list_replays` (metadata only; never raw rrweb payloads) | No |
 | `heatmaps` | `get_heatmap` (click/scroll pages and bounded detail points) | No |
 
-Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has 15 aggregate tools; `all` has 42. Multi-website insights are bounded to 50 websites with four concurrent website workers. High-cardinality report, performance, heatmap, channel fan-out, and activity results carry explicit limits and truncation metadata.
+Set `UMAMI_TOOLSETS=all` or a comma-separated subset. The default has 15 aggregate tools and `all` has 43. Multi-website insights are bounded to 50 websites with four concurrent website workers. High-cardinality report, performance, heatmap, channel fan-out, and activity results carry explicit limits and truncation metadata.
+
+`get_event_property_values` groups occurrences of one custom property for a named event and date range. For example, query `eventName: "checkout"` and `propertyName: "plan"`, with `path: "/pricing"` to restrict the counts to that page. Pass `path: ""` if Umami stores the homepage as an empty path. Counts preserve empty strings and null values. Umami can return null when a value was too large to store. Umami caps results at 100 values and Compass flags a potentially incomplete result when that cap is reached. Custom properties can contain sensitive values, so grant the optional `events` toolset only to authorized clients.
 
 `get_performance_breakdown` requires at least 20 performance events per row by default for page, page-title, device, and browser rankings. This is an exploratory p75 quality guard, not a claim of statistical significance. Umami 3.2 calculates these counts with `count(*)`, not `count(metric)`, so Compass labels them as event counts and never presents them as metric-specific samples. Set `minimumSampleCount` explicitly to tighten the guard or lower it to `1` to include every otherwise valid row.
 
