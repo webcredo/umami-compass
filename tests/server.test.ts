@@ -51,6 +51,7 @@ describe("Umami Compass MCP server", () => {
       "list_events",
       "get_event_stats",
       "get_event_series",
+      "get_event_property_values",
       "list_sessions",
       "get_session_stats",
       "get_session",
@@ -65,7 +66,7 @@ describe("Umami Compass MCP server", () => {
     const client = await connect(vi.fn<Fetch>(), "all");
     const result = await client.listTools();
 
-    expect(result.tools).toHaveLength(42);
+    expect(result.tools).toHaveLength(43);
     expect(result.tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
     expect(
       result.tools.some((tool) => /^(create|update|delete|reset|share|save|send)_/.test(tool.name)),
@@ -1281,6 +1282,116 @@ describe("Umami Compass MCP server", () => {
     expect(result.isError).not.toBe(true);
     const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
     expect(url.searchParams.get("unit")).toBe("month");
+  });
+
+  describe("event property value counts", () => {
+    const args = {
+      websiteId: WEBSITE_ID,
+      start: "2026-07-01",
+      end: "2026-07-02",
+      eventName: "checkout",
+      propertyName: "Plan",
+    };
+    const name = "get_event_property_values";
+
+    it("scopes the read to the requested event and page on both endpoint contracts", async () => {
+      const values = [
+        { value: "001", total: 6 },
+        { value: "", total: 2 },
+        { value: null, total: 1 },
+      ];
+      const fetchMock = vi.fn<Fetch>().mockResolvedValue(Response.json(values));
+      const client = await connect(fetchMock, "events");
+
+      const result = await client.callTool({ name, arguments: { ...args, path: "/" } });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        data: { values, upstreamValueLimit: 100 },
+        meta: {
+          websiteId: WEBSITE_ID,
+          requestedRange: { start: args.start, end: args.end },
+          dataStatus: "available",
+          responseTruncated: false,
+        },
+      });
+      const [input, init] = fetchMock.mock.calls[0] ?? [];
+      const url = new URL(String(input));
+      expect(url.pathname).toBe(`/v1/websites/${WEBSITE_ID}/event-data/values`);
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        startAt: String(Date.parse("2026-07-01T00:00:00.000Z")),
+        endAt: String(Date.parse("2026-07-02T23:59:59.999Z")),
+        event: "checkout",
+        eventName: "checkout",
+        propertyName: "Plan",
+        path: "/",
+      });
+      expect(init?.method).toBe("GET");
+      expect(new Headers(init?.headers).get("x-umami-api-key")).toBe("test-key");
+    });
+
+    it.each(["", "#details", "/a\nb"])("preserves an exact stored path of %j", async (path) => {
+      const fetchMock = vi.fn<Fetch>().mockResolvedValue(Response.json([]));
+      const client = await connect(fetchMock, "events");
+
+      const result = await client.callTool({ name, arguments: { ...args, path } });
+
+      expect(result.isError).not.toBe(true);
+      expect(new URL(String(fetchMock.mock.calls[0]?.[0])).searchParams.get("path")).toBe(path);
+    });
+
+    it("distinguishes empty results and potentially incomplete results at the upstream cap", async () => {
+      const cappedValues = Array.from({ length: 100 }, (_, index) => ({
+        value: String(index),
+        total: 1,
+      }));
+      const fetchMock = vi
+        .fn<Fetch>()
+        .mockResolvedValueOnce(Response.json([]))
+        .mockResolvedValueOnce(Response.json(cappedValues));
+      const client = await connect(fetchMock, "events");
+      const empty = await client.callTool({ name, arguments: args });
+      const capped = await client.callTool({ name, arguments: args });
+
+      expect(empty.structuredContent).toMatchObject({
+        data: { values: [] },
+        meta: { dataStatus: "empty", emptyReason: "no_data_in_range", responseTruncated: false },
+      });
+      expect(capped.structuredContent).toMatchObject({
+        data: { values: cappedValues },
+        meta: { dataStatus: "available", responseTruncated: true, truncated: true },
+      });
+      expect(new URL(String(fetchMock.mock.calls[0]?.[0])).searchParams.has("path")).toBe(false);
+    });
+
+    it("rejects ambiguous or invalid scopes before calling Umami", async () => {
+      const fetchMock = vi.fn<Fetch>();
+      const client = await connect(fetchMock, "events");
+
+      for (const inputs of [
+        { eventName: "checkout,signup" },
+        { eventName: "c.checkout" },
+        { path: "/pricing,/products" },
+        { propertyName: "" },
+        { end: "2026-06-30" },
+      ]) {
+        const result = await client.callTool({ name, arguments: { ...args, ...inputs } });
+        expect(result.isError).toBe(true);
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects malformed upstream values without relaying the upstream body", async () => {
+      const fetchMock = vi
+        .fn<Fetch>()
+        .mockResolvedValue(Response.json([{ value: "private-fixture", total: null }]));
+      const client = await connect(fetchMock, "events");
+      const result = await client.callTool({ name, arguments: args });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("INVALID_RESPONSE");
+      expect(JSON.stringify(result.content)).not.toContain("private-fixture");
+    });
   });
 
   it("omits excludeBounce unless it is explicitly true", async () => {
